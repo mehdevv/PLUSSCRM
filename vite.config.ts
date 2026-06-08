@@ -5,6 +5,7 @@ import path from "path";
 import { inviteRepApiPlugin } from "./scripts/vite-invite-rep-api.mjs";
 
 export default defineConfig({
+  appType: "spa",
   plugins: [inviteRepApiPlugin(), react(), tailwindcss()],
   resolve: {
     alias: {

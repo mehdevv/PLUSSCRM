@@ -262,12 +262,16 @@ export function LoginForm({ portal }: LoginFormProps) {
 
             <Button
               type="submit"
-              className="w-full h-10 bg-zinc-900 text-white border-zinc-900 hover:bg-zinc-800"
+              className={
+                isAdmin
+                  ? "w-full h-10 bg-zinc-900 text-white border-zinc-900 hover:bg-zinc-800"
+                  : "w-full h-10"
+              }
               disabled={loading}
             >
               {loading ? (
                 <>
-                  <Spinner className="text-white" />
+                  <Spinner className={isAdmin ? "text-white" : "text-primary-foreground"} />
                   Signing in…
                 </>
               ) : (
