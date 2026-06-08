@@ -1,0 +1,8 @@
+# Supabase local/dev config — project ref from dashboard URL
+project_id = "lnptkgvuyosabvoqivyg"
+
+[functions.invite-rep]
+verify_jwt = true
+
+[functions.delete-rep]
+verify_jwt = true
