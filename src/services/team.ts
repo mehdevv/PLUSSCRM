@@ -69,6 +69,48 @@ export async function fetchCompensationPlans(): Promise<CompensationPlan[]> {
   return (data ?? []).map((r) => mapCompPlan(r as Record<string, unknown>));
 }
 
+export async function updateCompensationPlan(
+  id: string,
+  updates: {
+    name?: string;
+    base_rate?: number;
+    tier_multiplier?: number;
+    accelerator?: number;
+    cap?: number | null;
+  },
+) {
+  const { data, error } = await supabase
+    .from("compensation_plans")
+    .update(updates)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return mapCompPlan(data as Record<string, unknown>);
+}
+
+export async function createCompensationPlan(input: {
+  name: string;
+  base_rate: number;
+  tier_multiplier?: number;
+  accelerator?: number;
+  cap?: number | null;
+}) {
+  const { data, error } = await supabase
+    .from("compensation_plans")
+    .insert({
+      name: input.name.trim(),
+      base_rate: input.base_rate,
+      tier_multiplier: input.tier_multiplier ?? 1,
+      accelerator: input.accelerator ?? 1,
+      cap: input.cap ?? null,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return mapCompPlan(data as Record<string, unknown>);
+}
+
 export async function fetchRepCompensation(): Promise<RepCompensation[]> {
   const { data, error } = await supabase
     .from("rep_compensation")

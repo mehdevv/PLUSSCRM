@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { RoleRulesInfoButton } from "@/components/admin/RoleRulesCard";
 import { CommissionEditModal } from "@/components/team/CommissionEditModal";
+import { CompPlanEditModal } from "@/components/team/CompPlanEditModal";
+import type { CompPlanFormValues } from "@/components/team/CompPlanEditModal";
 import { RepEditModal } from "@/components/team/RepEditModal";
 import { Spinner } from "@/components/ui/spinner";
 import { useSalesReps, useCompPlans, useRepCompensation, useCommissions, useTeamMutations, useLeaderboard } from "@/hooks/queries";
@@ -11,7 +13,7 @@ import { canDelete, canEdit, confirmDeleteMessage } from "@/lib/permissions";
 import type { Profile, RepTier } from "@/types";
 import { formatDate } from "@/lib/format";
 import { useCurrency } from "@/hooks/useCurrency";
-import type { Commission } from "@/types";
+import type { Commission, CompensationPlan } from "@/types";
 import { Plus, ToggleLeft, ToggleRight, Pencil, Trash2, X } from "lucide-react";
 
 const TIER_LABELS: Record<RepTier, string> = {
@@ -41,14 +43,16 @@ export default function Team() {
   const [deletingRepId, setDeletingRepId] = useState<string | null>(null);
   const [editingRep, setEditingRep] = useState<Profile | null>(null);
   const [editingCommission, setEditingCommission] = useState<Commission | null>(null);
-  const { user } = useAuth();
+  const [editingPlan, setEditingPlan] = useState<CompensationPlan | null>(null);
+  const [creatingPlan, setCreatingPlan] = useState(false);
+  const { user, isAdmin } = useAuth();
   const { toast } = useToast();
   const { data: salesReps = [], isLoading: repsLoading } = useSalesReps();
   const { data: compPlans = [], isLoading: plansLoading } = useCompPlans();
   const { data: repCompensation = [], isLoading: repCompLoading } = useRepCompensation();
   const { data: commissions = [], isLoading: commissionsLoading } = useCommissions();
   const { data: leaderboard = [] } = useLeaderboard("monthly");
-  const { updateProfile, payCommission, updateCommission, inviteRep, deleteRep, deleteCommission, setRepPlan } = useTeamMutations();
+  const { updateProfile, payCommission, updateCommission, inviteRep, deleteRep, deleteCommission, setRepPlan, updateCompPlan, createCompPlan } = useTeamMutations();
   const { formatMoney } = useCurrency();
 
   const statsMap = new Map(leaderboard.map((e) => [e.user_id, e]));
@@ -135,6 +139,32 @@ export default function Team() {
     );
   };
 
+  const canManagePlans = isAdmin;
+
+  const handleSaveCompPlan = (values: CompPlanFormValues) => {
+    if (creatingPlan) {
+      createCompPlan.mutate(values, {
+        onSuccess: () => {
+          setCreatingPlan(false);
+          toast({ title: "Compensation plan created" });
+        },
+        onError: (err: Error) => toast({ title: "Create failed", description: err.message, variant: "destructive" }),
+      });
+      return;
+    }
+    if (!editingPlan) return;
+    updateCompPlan.mutate(
+      { id: editingPlan.id, updates: values },
+      {
+        onSuccess: () => {
+          setEditingPlan(null);
+          toast({ title: "Compensation plan updated" });
+        },
+        onError: (err: Error) => toast({ title: "Save failed", description: err.message, variant: "destructive" }),
+      },
+    );
+  };
+
   const handleDeleteCommission = (id: string, label: string) => {
     if (!confirmDeleteMessage(label, "This commission entry will be removed from the ledger.")) return;
     deleteCommission.mutate(id, {
@@ -196,6 +226,16 @@ export default function Team() {
           </div>
           <div className="flex items-center gap-2">
             <RoleRulesInfoButton />
+            {activeTab === "Compensation Plans" && canManagePlans && (
+              <button
+                type="button"
+                onClick={() => setCreatingPlan(true)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+                data-testid="btn-add-comp-plan"
+              >
+                <Plus className="w-4 h-4" />Add Plan
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setShowInvite(true)}
@@ -334,50 +374,97 @@ export default function Team() {
             )}
 
             {activeTab === "Compensation Plans" && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                {compPlans.length === 0 ? (
-                  <p className="text-sm text-muted-foreground col-span-full">No compensation plans configured.</p>
-                ) : (
-                  compPlans.map((plan, i) => {
-                    const accent = PLAN_ACCENTS[i % PLAN_ACCENTS.length];
-                    const rateLabel = plan.accelerator > 1
-                      ? `${plan.base_rate}% + accelerator`
-                      : `${plan.base_rate}%`;
-                    return (
-                      <div key={plan.id} className="bg-card border border-card-border rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow" data-testid={`comp-plan-${plan.name.toLowerCase().replace(/\s/g, "-")}`}>
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: accent }} />
-                          <span className="font-display text-xl font-bold" style={{ color: accent }}>{rateLabel}</span>
-                        </div>
-                        <h3 className="font-display font-bold text-base text-foreground mb-1">{plan.name}</h3>
-                        <p className="text-xs text-muted-foreground mb-3">
-                          Tier multiplier: {plan.tier_multiplier}x
-                          {plan.cap != null ? ` · Cap: ${formatMoney(plan.cap)}` : ""}
-                        </p>
-                        <div className="text-xs bg-muted rounded-lg px-3 py-2 text-muted-foreground mb-4">
-                          Accelerator: {plan.accelerator}x at quota threshold
-                        </div>
-                        <div className="border-t border-border pt-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Assigned reps</p>
-                          {salesReps.filter((r) => repPlanMap.get(r.id)?.plan_id === plan.id).length === 0 ? (
-                            <p className="text-xs text-muted-foreground">No reps on this plan</p>
-                          ) : (
-                            <ul className="space-y-1">
-                              {salesReps
-                                .filter((r) => repPlanMap.get(r.id)?.plan_id === plan.id)
-                                .map((r) => (
-                                  <li key={r.id} className="text-xs text-foreground flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ backgroundColor: r.color }}>{r.initials}</span>
-                                    {r.name}
-                                  </li>
-                                ))}
-                            </ul>
+              <div className="space-y-4">
+                {canManagePlans && (
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-sm text-muted-foreground">
+                      Set commission rates, tier multipliers, and accelerators. Assign plans to reps on the Reps tab.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setCreatingPlan(true)}
+                      className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+                      data-testid="btn-add-comp-plan-inline"
+                    >
+                      <Plus className="w-4 h-4" />Add Plan
+                    </button>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  {compPlans.length === 0 ? (
+                    <div className="col-span-full bg-card border border-dashed border-border rounded-xl p-10 text-center">
+                      <p className="text-sm text-muted-foreground mb-4">No compensation plans yet.</p>
+                      {canManagePlans && (
+                        <button
+                          type="button"
+                          onClick={() => setCreatingPlan(true)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90"
+                        >
+                          <Plus className="w-4 h-4" />Create your first plan
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    compPlans.map((plan, i) => {
+                      const accent = PLAN_ACCENTS[i % PLAN_ACCENTS.length];
+                      const rateLabel = plan.accelerator > 1
+                        ? `${plan.base_rate}% + accelerator`
+                        : `${plan.base_rate}%`;
+                      return (
+                        <div
+                          key={plan.id}
+                          className={`bg-card border border-card-border rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow flex flex-col ${canManagePlans ? "cursor-pointer hover:border-primary/30" : ""}`}
+                          data-testid={`comp-plan-${plan.name.toLowerCase().replace(/\s/g, "-")}`}
+                          onClick={canManagePlans ? () => setEditingPlan(plan) : undefined}
+                          onKeyDown={canManagePlans ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setEditingPlan(plan); } } : undefined}
+                          role={canManagePlans ? "button" : undefined}
+                          tabIndex={canManagePlans ? 0 : undefined}
+                        >
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: accent }} />
+                            <span className="font-display text-xl font-bold" style={{ color: accent }}>{rateLabel}</span>
+                          </div>
+                          <h3 className="font-display font-bold text-base text-foreground mb-1">{plan.name}</h3>
+                          <p className="text-xs text-muted-foreground mb-3">
+                            Tier multiplier: {plan.tier_multiplier}x
+                            {plan.cap != null ? ` · Cap: ${formatMoney(plan.cap)}` : ""}
+                          </p>
+                          <div className="text-xs bg-muted rounded-lg px-3 py-2 text-muted-foreground mb-4">
+                            Accelerator: {plan.accelerator}x at quota threshold
+                          </div>
+                          <div className="border-t border-border pt-3 flex-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Assigned reps</p>
+                            {salesReps.filter((r) => repPlanMap.get(r.id)?.plan_id === plan.id).length === 0 ? (
+                              <p className="text-xs text-muted-foreground">No reps on this plan</p>
+                            ) : (
+                              <ul className="space-y-1">
+                                {salesReps
+                                  .filter((r) => repPlanMap.get(r.id)?.plan_id === plan.id)
+                                  .map((r) => (
+                                    <li key={r.id} className="text-xs text-foreground flex items-center gap-2">
+                                      <span className="w-5 h-5 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ backgroundColor: r.color }}>{r.initials}</span>
+                                      {r.name}
+                                    </li>
+                                  ))}
+                              </ul>
+                            )}
+                          </div>
+                          {canManagePlans && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setEditingPlan(plan); }}
+                              className="mt-4 w-full flex items-center justify-center gap-1.5 py-2 border border-border rounded-lg text-sm font-medium text-foreground hover:bg-muted transition-colors"
+                              data-testid={`btn-edit-comp-plan-${plan.id}`}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              Edit plan
+                            </button>
                           )}
                         </div>
-                      </div>
-                    );
-                  })
-                )}
+                      );
+                    })
+                  )}
+                </div>
               </div>
             )}
 
@@ -464,6 +551,14 @@ export default function Team() {
         onSave={handleSaveRep}
       />
       <CommissionEditModal commission={editingCommission} open={!!editingCommission} saving={updateCommission.isPending} onClose={() => setEditingCommission(null)} onSave={handleSaveCommission} />
+      <CompPlanEditModal
+        plan={editingPlan}
+        open={!!editingPlan || creatingPlan}
+        isNew={creatingPlan}
+        saving={updateCompPlan.isPending || createCompPlan.isPending}
+        onClose={() => { setEditingPlan(null); setCreatingPlan(false); }}
+        onSave={handleSaveCompPlan}
+      />
 
       {showInvite && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
