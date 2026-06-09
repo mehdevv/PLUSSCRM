@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
-import { mapCommission, mapCompPlan } from "@/lib/mappers";
-import type { Commission, CompensationPlan, RepTier } from "@/types";
+import { mapCommission, mapCompPlan, mapRepCompensation } from "@/lib/mappers";
+import type { Commission, CompensationPlan, RepCompensation, RepTier } from "@/types";
 
 async function adminApi<T>(path: string, body: unknown): Promise<T> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -67,6 +67,23 @@ export async function fetchCompensationPlans(): Promise<CompensationPlan[]> {
   const { data, error } = await supabase.from("compensation_plans").select("*").order("name");
   if (error) throw error;
   return (data ?? []).map((r) => mapCompPlan(r as Record<string, unknown>));
+}
+
+export async function fetchRepCompensation(): Promise<RepCompensation[]> {
+  const { data, error } = await supabase
+    .from("rep_compensation")
+    .select("id, user_id, plan_id, created_at, compensation_plans(name, base_rate, tier_multiplier, accelerator)")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r) => mapRepCompensation(r as Record<string, unknown>));
+}
+
+/** Assign one compensation plan to a rep (replaces any previous plan). */
+export async function setRepCompensationPlan(userId: string, planId: string) {
+  const { error: deleteErr } = await supabase.from("rep_compensation").delete().eq("user_id", userId);
+  if (deleteErr) throw deleteErr;
+  const { error } = await supabase.from("rep_compensation").insert({ user_id: userId, plan_id: planId });
+  if (error) throw error;
 }
 
 export async function fetchCommissions(): Promise<Commission[]> {

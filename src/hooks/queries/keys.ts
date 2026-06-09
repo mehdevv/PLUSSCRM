@@ -21,6 +21,7 @@ export const queryKeys = {
   leaderboard: (period: string) => ["leaderboard", period] as const,
   commissions: ["commissions"] as const,
   compPlans: ["compPlans"] as const,
+  repCompensation: ["repCompensation"] as const,
   accounting: ["accounting"] as const,
   settings: ["settings"] as const,
   notifications: (userId: string) => ["notifications", userId] as const,

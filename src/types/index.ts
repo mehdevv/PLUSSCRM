@@ -147,6 +147,17 @@ export interface CompensationPlan {
   created_at: string;
 }
 
+export interface RepCompensation {
+  id: string;
+  user_id: string;
+  plan_id: string;
+  plan_name: string;
+  base_rate: number;
+  tier_multiplier: number;
+  accelerator: number;
+  created_at: string;
+}
+
 export type CurrencyCode = "USD" | "DZD";
 
 export interface PlatformSettings {

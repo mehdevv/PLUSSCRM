@@ -1,10 +1,17 @@
+import { useState } from "react";
 import { ROLE_GUIDE } from "@/lib/permissions";
-import { Shield, Users } from "lucide-react";
+import { Shield, Users, Info } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
-export function RoleRulesCard() {
+function RoleRulesContent() {
   return (
-    <div className="bg-card border border-card-border rounded-xl p-5 shadow-sm mb-5" data-testid="role-rules-card">
-      <h2 className="font-display font-bold text-base text-foreground mb-1">Who can do what</h2>
+    <>
       <p className="text-sm text-muted-foreground mb-4">
         Admins manage operations. Reps work assigned leads only. Edit and delete follow the same rules.
       </p>
@@ -31,6 +38,45 @@ export function RoleRulesCard() {
           );
         })}
       </div>
+    </>
+  );
+}
+
+export function RoleRulesInfoButton() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="h-9 w-9 shrink-0"
+        onClick={() => setOpen(true)}
+        title="Who can do what"
+        aria-label="Role permissions information"
+        data-testid="btn-role-rules-info"
+      >
+        <Info className="w-4 h-4" />
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Who can do what</DialogTitle>
+          </DialogHeader>
+          <RoleRulesContent />
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+/** @deprecated Use RoleRulesInfoButton — kept for compatibility */
+export function RoleRulesCard() {
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5 shadow-sm mb-5" data-testid="role-rules-card">
+      <h2 className="font-display font-bold text-base text-foreground mb-1">Who can do what</h2>
+      <RoleRulesContent />
     </div>
   );
 }

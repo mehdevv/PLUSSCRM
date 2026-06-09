@@ -16,7 +16,8 @@ import {
   fetchPipelineFunnel, fetchSplitRuleEfficiency, fetchActivityFeed, fetchLeaderboard,
 } from "@/services/dashboard";
 import {
-  fetchCompensationPlans, fetchCommissions, payCommission, updateCommission,
+  fetchCompensationPlans, fetchRepCompensation, setRepCompensationPlan,
+  fetchCommissions, payCommission, updateCommission,
   fetchAccountingSummary, inviteSalesRep, deleteSalesRep, deleteCommission,
 } from "@/services/team";
 import { flagClientRenewal } from "@/services/clients";
@@ -104,6 +105,10 @@ export function useCommissions() {
 
 export function useCompPlans() {
   return useQuery({ queryKey: queryKeys.compPlans, queryFn: fetchCompensationPlans });
+}
+
+export function useRepCompensation() {
+  return useQuery({ queryKey: queryKeys.repCompensation, queryFn: fetchRepCompensation });
 }
 
 export function useAccounting() {
@@ -288,6 +293,13 @@ export function useTeamMutations() {
     }),
     inviteRep: useMutation({ mutationFn: inviteSalesRep, onSuccess: invalidateTeam }),
     deleteRep: useMutation({ mutationFn: deleteSalesRep, onSuccess: invalidateTeam }),
+    setRepPlan: useMutation({
+      mutationFn: ({ userId, planId }: { userId: string; planId: string }) =>
+        setRepCompensationPlan(userId, planId),
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: queryKeys.repCompensation });
+      },
+    }),
   };
 }
 

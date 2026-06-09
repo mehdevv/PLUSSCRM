@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
-import { RoleRulesCard } from "@/components/admin/RoleRulesCard";
+import { RoleRulesInfoButton } from "@/components/admin/RoleRulesCard";
 import { CommissionEditModal } from "@/components/team/CommissionEditModal";
 import { RepEditModal } from "@/components/team/RepEditModal";
 import { Spinner } from "@/components/ui/spinner";
-import { useSalesReps, useCompPlans, useCommissions, useTeamMutations, useLeaderboard } from "@/hooks/queries";
+import { useSalesReps, useCompPlans, useRepCompensation, useCommissions, useTeamMutations, useLeaderboard } from "@/hooks/queries";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { canDelete, canEdit, confirmDeleteMessage } from "@/lib/permissions";
@@ -45,13 +45,16 @@ export default function Team() {
   const { toast } = useToast();
   const { data: salesReps = [], isLoading: repsLoading } = useSalesReps();
   const { data: compPlans = [], isLoading: plansLoading } = useCompPlans();
+  const { data: repCompensation = [], isLoading: repCompLoading } = useRepCompensation();
   const { data: commissions = [], isLoading: commissionsLoading } = useCommissions();
   const { data: leaderboard = [] } = useLeaderboard("monthly");
-  const { updateProfile, payCommission, updateCommission, inviteRep, deleteRep, deleteCommission } = useTeamMutations();
+  const { updateProfile, payCommission, updateCommission, inviteRep, deleteRep, deleteCommission, setRepPlan } = useTeamMutations();
   const { formatMoney } = useCurrency();
 
   const statsMap = new Map(leaderboard.map((e) => [e.user_id, e]));
+  const repPlanMap = new Map(repCompensation.map((rc) => [rc.user_id, rc]));
   const activeCount = salesReps.filter((r) => r.is_active).length;
+  const savingRep = updateProfile.isPending || setRepPlan.isPending;
 
   const handleToggleActive = (id: string, isActive: boolean) => {
     updateProfile.mutate({ id, updates: { is_active: !isActive } });
@@ -76,13 +79,47 @@ export default function Team() {
     });
   };
 
-  const handleSaveRep = (updates: { name: string; initials: string; color: string; tier: Profile["tier"]; vacation_mode: boolean }) => {
+  const handleSaveRep = async (updates: {
+    name: string;
+    initials: string;
+    color: string;
+    tier: Profile["tier"];
+    vacation_mode: boolean;
+    planId: string;
+  }) => {
     if (!editingRep) return;
-    updateProfile.mutate(
-      { id: editingRep.id, updates },
+    try {
+      await updateProfile.mutateAsync({
+        id: editingRep.id,
+        updates: {
+          name: updates.name,
+          initials: updates.initials,
+          color: updates.color,
+          tier: updates.tier,
+          vacation_mode: updates.vacation_mode,
+        },
+      });
+      const currentPlanId = repPlanMap.get(editingRep.id)?.plan_id;
+      if (updates.planId && updates.planId !== currentPlanId) {
+        await setRepPlan.mutateAsync({ userId: editingRep.id, planId: updates.planId });
+      }
+      setEditingRep(null);
+      toast({ title: "Rep updated" });
+    } catch (err) {
+      toast({
+        title: "Save failed",
+        description: err instanceof Error ? err.message : "Could not save rep",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRepPlanChange = (userId: string, planId: string) => {
+    setRepPlan.mutate(
+      { userId, planId },
       {
-        onSuccess: () => { setEditingRep(null); toast({ title: "Rep updated" }); },
-        onError: (err: Error) => toast({ title: "Save failed", description: err.message, variant: "destructive" }),
+        onSuccess: () => toast({ title: "Commission plan updated" }),
+        onError: (err: Error) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
       },
     );
   };
@@ -114,13 +151,18 @@ export default function Team() {
     }
     try {
       const email = repForm.email.trim();
-      await inviteRep.mutateAsync({
+      const result = await inviteRep.mutateAsync({
         name: repForm.name.trim(),
         email,
         password: repForm.password,
         initials: repForm.initials.trim() || undefined,
         color: repForm.color,
       });
+      const defaultPlan =
+        compPlans.find((p) => p.name === "Standard Plan") ?? compPlans[0];
+      if (defaultPlan && result.userId) {
+        await setRepPlan.mutateAsync({ userId: result.userId, planId: defaultPlan.id });
+      }
       setRepForm(EMPTY_REP_FORM);
       setShowInvite(false);
       toast({
@@ -138,7 +180,8 @@ export default function Team() {
 
   const isLoading =
     (activeTab === "Reps" && repsLoading) ||
-    (activeTab === "Compensation Plans" && plansLoading) ||
+    (activeTab === "Compensation Plans" && (plansLoading || repCompLoading)) ||
+    (activeTab === "Reps" && repCompLoading) ||
     (activeTab === "Commission Ledger" && commissionsLoading);
 
   return (
@@ -151,17 +194,18 @@ export default function Team() {
               {repsLoading ? "Loading…" : `${salesReps.length} reps · ${activeCount} active`}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowInvite(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
-            data-testid="btn-add-rep"
-          >
-            <Plus className="w-4 h-4" />Add Rep
-          </button>
+          <div className="flex items-center gap-2">
+            <RoleRulesInfoButton />
+            <button
+              type="button"
+              onClick={() => setShowInvite(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+              data-testid="btn-add-rep"
+            >
+              <Plus className="w-4 h-4" />Add Rep
+            </button>
+          </div>
         </div>
-
-        <RoleRulesCard />
 
         <div className="flex border-b border-border mb-5">
           {tabs.map((tab) => (
@@ -194,6 +238,7 @@ export default function Team() {
                       <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Deals MTD</th>
                       <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Win Rate</th>
                       <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Revenue MTD</th>
+                      <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Commission</th>
                       <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center">Active</th>
                       <th className="px-4 py-3 w-24 text-right">Actions</th>
                     </tr>
@@ -204,6 +249,7 @@ export default function Team() {
                       const winRate = stats?.win_rate ?? 0;
                       const dealsMtd = stats?.deals_mtd ?? 0;
                       const revenue = stats?.revenue ?? 0;
+                      const repPlan = repPlanMap.get(rep.id);
                       return (
                         <tr key={rep.id} className="hover:bg-muted/40 transition-colors" data-testid={`rep-row-${rep.id}`}>
                           <td className="px-4 py-3">
@@ -232,6 +278,24 @@ export default function Team() {
                             </div>
                           </td>
                           <td className="px-4 py-3 font-semibold text-foreground">{formatMoney(revenue)}</td>
+                          <td className="px-4 py-3">
+                            {compPlans.length === 0 ? (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            ) : (
+                              <select
+                                value={repPlan?.plan_id ?? ""}
+                                onChange={(e) => handleRepPlanChange(rep.id, e.target.value)}
+                                disabled={setRepPlan.isPending}
+                                className="text-xs px-2 py-1.5 border border-border rounded-lg bg-background max-w-[140px]"
+                                data-testid={`select-rep-plan-${rep.id}`}
+                              >
+                                {!repPlan && <option value="" disabled>Select plan</option>}
+                                {compPlans.map((p) => (
+                                  <option key={p.id} value={p.id}>{p.name} ({p.base_rate}%)</option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-center">
                             <button
                               onClick={() => handleToggleActive(rep.id, rep.is_active)}
@@ -292,6 +356,23 @@ export default function Team() {
                         </p>
                         <div className="text-xs bg-muted rounded-lg px-3 py-2 text-muted-foreground mb-4">
                           Accelerator: {plan.accelerator}x at quota threshold
+                        </div>
+                        <div className="border-t border-border pt-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Assigned reps</p>
+                          {salesReps.filter((r) => repPlanMap.get(r.id)?.plan_id === plan.id).length === 0 ? (
+                            <p className="text-xs text-muted-foreground">No reps on this plan</p>
+                          ) : (
+                            <ul className="space-y-1">
+                              {salesReps
+                                .filter((r) => repPlanMap.get(r.id)?.plan_id === plan.id)
+                                .map((r) => (
+                                  <li key={r.id} className="text-xs text-foreground flex items-center gap-2">
+                                    <span className="w-5 h-5 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ backgroundColor: r.color }}>{r.initials}</span>
+                                    {r.name}
+                                  </li>
+                                ))}
+                            </ul>
+                          )}
                         </div>
                       </div>
                     );
@@ -373,7 +454,15 @@ export default function Team() {
         )}
       </div>
 
-      <RepEditModal rep={editingRep} open={!!editingRep} saving={updateProfile.isPending} onClose={() => setEditingRep(null)} onSave={handleSaveRep} />
+      <RepEditModal
+        rep={editingRep}
+        open={!!editingRep}
+        saving={savingRep}
+        compPlans={compPlans}
+        currentPlanId={editingRep ? repPlanMap.get(editingRep.id)?.plan_id : undefined}
+        onClose={() => setEditingRep(null)}
+        onSave={handleSaveRep}
+      />
       <CommissionEditModal commission={editingCommission} open={!!editingCommission} saving={updateCommission.isPending} onClose={() => setEditingCommission(null)} onSave={handleSaveCommission} />
 
       {showInvite && (

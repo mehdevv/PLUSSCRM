@@ -1,5 +1,5 @@
 import type {
-  Lead, Deal, Client, Payment, Activity, SplitRule, Profile, Commission, CompensationPlan, ClientNote, ClientFile, ImportJob, AssignmentQueueItem,
+  Lead, Deal, Client, Payment, Activity, SplitRule, Profile, Commission, CompensationPlan, RepCompensation, ClientNote, ClientFile, ImportJob, AssignmentQueueItem,
 } from "@/types";
 
 export function mapLead(row: Record<string, unknown>): Lead {
@@ -163,6 +163,20 @@ export function mapCompPlan(row: Record<string, unknown>): CompensationPlan {
     tier_multiplier: Number(row.tier_multiplier ?? 1),
     accelerator: Number(row.accelerator ?? 1),
     cap: row.cap != null ? Number(row.cap) : null,
+    created_at: row.created_at as string,
+  };
+}
+
+export function mapRepCompensation(row: Record<string, unknown>): RepCompensation {
+  const plan = row.compensation_plans as Record<string, unknown> | undefined;
+  return {
+    id: row.id as string,
+    user_id: row.user_id as string,
+    plan_id: row.plan_id as string,
+    plan_name: (plan?.name as string) ?? "Unassigned",
+    base_rate: Number(plan?.base_rate ?? 0),
+    tier_multiplier: Number(plan?.tier_multiplier ?? 1),
+    accelerator: Number(plan?.accelerator ?? 1),
     created_at: row.created_at as string,
   };
 }
