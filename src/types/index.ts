@@ -87,6 +87,8 @@ export interface Client {
   manager_id: string;
   country: string | null;
   currency: string;
+  /** Set when this client row was created from a specific won deal. */
+  won_deal_id: string | null;
   created_at: string;
 }
 
@@ -181,7 +183,7 @@ export interface PlatformSettings {
   usd_to_dzd_rate: number;
   date_format: string;
   notification_prefs: Record<string, boolean>;
-  freemove_rep_ids: string[];
+  previous_rep_ids: string[];
 }
 
 export interface Notification {

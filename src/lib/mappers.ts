@@ -85,6 +85,7 @@ export function mapClient(row: Record<string, unknown>): Client {
     manager_id: row.manager_id as string,
     country: (row.country as string) ?? null,
     currency: (row.currency as string) ?? "USD",
+    won_deal_id: (row.won_deal_id as string) ?? null,
     created_at: row.created_at as string,
   };
 }

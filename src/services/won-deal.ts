@@ -4,6 +4,7 @@ import {
   deleteClientIfZeroLtv,
   ensureClientFromWonDeal,
   findClientByLead,
+  findClientByWonDeal,
   pruneZeroLtvClients,
   syncClientLtvFromPayments,
   uploadClientFile,
@@ -30,14 +31,18 @@ export async function resolveClientForWonDeal(
   dealValue: number,
   currency: string,
 ): Promise<Client | null> {
-  let client = await findClientByLead(lead.company, lead.email);
+  let client = await findClientByWonDeal(deal.id);
+  if (!client) {
+    client = await findClientByLead(lead.company, lead.email);
+  }
   if (!client) {
     await new Promise((r) => setTimeout(r, 400));
-    client = await findClientByLead(lead.company, lead.email);
+    client = (await findClientByWonDeal(deal.id)) ?? (await findClientByLead(lead.company, lead.email));
   }
   if (!client) {
     client = await ensureClientFromWonDeal(
       {
+        dealId: deal.id,
         leadId: lead.id,
         company: lead.company,
         contact: lead.name,

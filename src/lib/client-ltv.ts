@@ -96,13 +96,12 @@ export function sumClientsLtv(
   return { amount: 0, currency: "DZD" };
 }
 
-/** Won-deal clients with no recorded revenue are removed automatically. */
+/** Clients with no recorded revenue (LTV ≤ 0) are removed automatically. */
 export function shouldPruneZeroLtvClient(
-  client: Pick<Client, "deals_count">,
+  client: Pick<Client, "company" | "manager_id" | "email" | "ltv">,
   leads: Pick<Lead, "id" | "company" | "email" | "assigned_to">[],
   payments: Pick<Payment, "lead_id" | "amount" | "currency" | "status">[],
 ): boolean {
-  if (client.deals_count <= 0) return false;
   return resolveClientLtv(client as Client, leads, payments).amount <= 0;
 }
 

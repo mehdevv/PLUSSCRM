@@ -7,10 +7,13 @@ import {
 import { supabase } from "@/lib/supabase";
 import { mapDeal } from "@/lib/mappers";
 import {
+  deleteClient,
   deleteClientIfZeroLtv,
   findClientByLead,
+  findClientByWonDeal,
   syncClientLtvFromPayments,
 } from "@/services/clients";
+import { deleteMeetingBriefForDeal } from "@/services/meetingBriefs";
 import { deletePaymentsForLead } from "@/services/payments";
 import type { Deal, LeadStatus } from "@/types";
 
@@ -160,8 +163,14 @@ export async function revertWonDealEffects(dealId: string, leadId: string, repId
 
   if (!lead) return;
 
+  const linkedClient = await findClientByWonDeal(dealId);
+  if (linkedClient) {
+    await deleteClient(linkedClient.id);
+    return;
+  }
+
   const client = await findClientByLead(lead.company, lead.email);
-  if (!client || client.manager_id !== repId) return;
+  if (!client || client.manager_id !== repId || client.won_deal_id) return;
 
   const nextDealsCount = Math.max(0, client.deals_count - 1);
   await supabase
@@ -215,6 +224,33 @@ export function prevPipelineStage(current: LeadStatus): LeadStatus | null {
   const idx = PIPELINE_KANBAN_STAGES.indexOf(normalized);
   if (idx <= 0) return null;
   return PIPELINE_KANBAN_STAGES[idx - 1];
+}
+
+/** Stage to return to when reversing (terminal Won/Lost → last active column). */
+export function pipelinePreviousStage(current: LeadStatus): LeadStatus | null {
+  const leaving = normalizePipelineStage(current);
+  if (leaving === "WON" || leaving === "LOST") return "MEETING_PENDING";
+  return prevPipelineStage(leaving);
+}
+
+/** Move deal back one pipeline step and remove data created for the current stage. */
+export async function moveDealToPreviousStage(
+  dealId: string,
+  leadId: string,
+  currentStage: LeadStatus,
+): Promise<LeadStatus> {
+  const prev = pipelinePreviousStage(currentStage);
+  if (!prev) {
+    throw new Error("Already at the first pipeline stage.");
+  }
+
+  const leaving = normalizePipelineStage(currentStage);
+  if (leaving === "MEETING_PENDING") {
+    await deleteMeetingBriefForDeal(dealId);
+  }
+
+  await updateDealStageWithLead(dealId, prev, leadId);
+  return prev;
 }
 
 export const PIPELINE_STAGE_OPTIONS: LeadStatus[] = [

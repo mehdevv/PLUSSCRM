@@ -2,14 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { activeBoardDeals, dealsInBoardColumn, PIPELINE_KANBAN_STAGES, terminalBoardDeals } from "@/lib/pipeline-board";
 import { useLocation } from "wouter";
 import { Sidebar } from "@/components/layout/Sidebar";
-import { ACTIVE_PIPELINE_STAGES, STATUS_COLORS, STATUS_LABELS, LEADS_RETURN_OPTIONS } from "@/lib/constants";
+import { ACTIVE_PIPELINE_STAGES, STATUS_COLORS, STATUS_LABELS, LEADS_RETURN_OPTIONS, normalizePipelineStage } from "@/lib/constants";
 import { formatDate } from "@/lib/format";
 import { useCurrency } from "@/hooks/useCurrency";
 import { useDeals, useDealMutations, useSalesReps, useLeads, useActivities, usePayments, useSettings } from "@/hooks/queries";
-import { FreemoveControl } from "@/components/pipeline/FreemoveControl";
-import { TerminalDealCard, FREEMOVE_DRAG_MIME } from "@/components/pipeline/TerminalDealCard";
-import { repHasFreemove, type FreemoveTarget } from "@/lib/freemove";
-import { cn } from "@/lib/utils";
+import { repHasPipelinePrevious } from "@/lib/pipeline-previous";
+import { TerminalDealCard } from "@/components/pipeline/TerminalDealCard";
 import { formatClientLtvAmount } from "@/lib/client-ltv";
 import { wonDealDisplayAmount } from "@/lib/deal-value";
 import { useAuth } from "@/hooks/useAuth";
@@ -25,7 +23,9 @@ import type { WonDealPaymentInput } from "@/services/won-deal";
 import { queryKeys } from "@/hooks/queries/keys";
 import {
   nextPipelineStage,
+  pipelinePreviousStage,
   moveDealToStage,
+  moveDealToPreviousStage,
   PIPELINE_STAGE_OPTIONS,
   returnLeadToBoard,
   syncOrphanedPipelineLeads,
@@ -39,51 +39,9 @@ import { LeadActivityPreview } from "@/components/leads/LeadActivityPreview";
 import { groupActivitiesByLead, activitiesForLead } from "@/lib/activity-display";
 import type { Activity, Deal, Lead, LeadStatus, Profile } from "@/types";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { AlertCircle, X, ArrowRight, Trophy, XCircle, ClipboardList, Phone, Eye, Info, Calendar } from "lucide-react";
+import { AlertCircle, X, ArrowLeft, ArrowRight, Trophy, XCircle, ClipboardList, Phone, Eye, Info, Calendar } from "lucide-react";
 
 const STAGES = PIPELINE_KANBAN_STAGES;
-type DropTarget = LeadStatus;
-
-function PipelineDropColumn({
-  dropKey,
-  dropHighlight,
-  onDragOver,
-  onDrop,
-  className,
-  children,
-}: {
-  dropKey: DropTarget;
-  dropHighlight: DropTarget | null;
-  onDragOver: (key: DropTarget | null) => void;
-  onDrop: (dealId: string, key: DropTarget) => void;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className={cn(className, dropHighlight === dropKey && "ring-2 ring-red-400/60 rounded-xl")}
-      onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes(FREEMOVE_DRAG_MIME)) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        onDragOver(dropKey);
-      }}
-      onDragLeave={(e) => {
-        const related = e.relatedTarget as Node | null;
-        if (related && e.currentTarget.contains(related)) return;
-        onDragOver(null);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const dealId = e.dataTransfer.getData(FREEMOVE_DRAG_MIME);
-        if (dealId) onDrop(dealId, dropKey);
-        onDragOver(null);
-      }}
-    >
-      {children}
-    </div>
-  );
-}
 
 /** Active pipeline deals that can be marked Won */
 const WINNABLE_STAGES: LeadStatus[] = [...ACTIVE_PIPELINE_STAGES];
@@ -95,9 +53,15 @@ function nextAdvanceLabel(stage: LeadStatus): string | null {
   return `→ ${STATUS_LABELS[next]}`;
 }
 
+function prevAdvanceLabel(stage: LeadStatus): string | null {
+  const prev = pipelinePreviousStage(stage);
+  if (!prev) return null;
+  return `← ${STATUS_LABELS[prev]}`;
+}
+
 const PIPELINE_ADVANCE_FLOW = PIPELINE_KANBAN_STAGES.map((s) => STATUS_LABELS[s]).join(" → ");
 
-function PipelineOperationsHelp({ showStaffNote, showFreemoveNote }: { showStaffNote?: boolean; showFreemoveNote?: boolean }) {
+function PipelineOperationsHelp({ showStaffNote, showPreviousNote }: { showStaffNote?: boolean; showPreviousNote?: boolean }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -118,6 +82,11 @@ function PipelineOperationsHelp({ showStaffNote, showFreemoveNote }: { showStaff
           <li>
             <strong className="text-foreground">Advance</strong> — move deal to the next stage ({PIPELINE_ADVANCE_FLOW}). At Meeting pending, fill in the meeting prep brief first.
           </li>
+          {showPreviousNote && (
+            <li>
+              <strong className="text-foreground">Previous</strong> — step back one stage and undo what that step created (meeting brief, won payment/client data, etc.)
+            </li>
+          )}
           <li>
             <strong className="text-foreground">Won</strong> — close the deal, record payment details, upload receipts, and open the client profile
           </li>
@@ -127,11 +96,6 @@ function PipelineOperationsHelp({ showStaffNote, showFreemoveNote }: { showStaff
           {showStaffNote && (
             <li>
               <strong className="text-foreground">Change stage</strong> — jump to any pipeline stage or return the lead to Assigned / Contacted on Leads
-            </li>
-          )}
-          {showFreemoveNote && (
-            <li>
-              <strong className="text-foreground">Freemove</strong> — red button on a card: drag to any column or pick a destination from the menu
             </li>
           )}
         </ul>
@@ -189,6 +153,7 @@ function DealCard({
   busy,
   staffTools,
   onAdvance,
+  onPrevious,
   onStageChange,
   onWon,
   onLost,
@@ -197,12 +162,7 @@ function DealCard({
   onViewActivities,
   onViewMeetingBrief,
   formatMoney,
-  freemoveVisible,
-  freemoveActive,
-  onFreemoveToggle,
-  onFreemoveMove,
-  onFreemoveDragStart,
-  onFreemoveDragEnd,
+  canUsePrevious,
 }: {
   deal: Deal;
   lead?: Lead;
@@ -210,7 +170,9 @@ function DealCard({
   reps: Profile[];
   busy: boolean;
   staffTools?: boolean;
+  canUsePrevious?: boolean;
   onAdvance: (deal: Deal) => void;
+  onPrevious: (deal: Deal) => void;
   onStageChange?: (deal: Deal, value: string) => void;
   onWon: (deal: Deal) => void;
   onLost: (deal: Deal) => void;
@@ -219,47 +181,18 @@ function DealCard({
   onViewActivities: (leadId: string) => void;
   onViewMeetingBrief?: (deal: Deal) => void;
   formatMoney: (n: number, c?: string) => string;
-  freemoveVisible?: boolean;
-  freemoveActive?: boolean;
-  onFreemoveToggle?: (deal: Deal) => void;
-  onFreemoveMove?: (deal: Deal, target: FreemoveTarget) => void;
-  onFreemoveDragStart?: (deal: Deal) => void;
-  onFreemoveDragEnd?: () => void;
 }) {
   const color = STATUS_COLORS[deal.stage];
   const next = nextPipelineStage(deal.stage);
   const canAdvance = next != null && next !== "WON";
+  const canPrevious = pipelinePreviousStage(deal.stage) != null;
   const canMarkWon = WINNABLE_STAGES.includes(deal.stage);
 
   return (
     <div
-      className={cn(
-        "bg-card border border-card-border rounded-xl p-3.5 shadow-sm relative overflow-hidden",
-        freemoveActive && "ring-2 ring-red-400/70 cursor-grab active:cursor-grabbing",
-      )}
+      className="bg-card border border-card-border rounded-xl p-3.5 shadow-sm relative overflow-hidden"
       data-testid={`deal-card-${deal.id}`}
-      draggable={!!freemoveActive}
-      onDragStart={(e) => {
-        if (!freemoveActive) {
-          e.preventDefault();
-          return;
-        }
-        e.dataTransfer.setData(FREEMOVE_DRAG_MIME, deal.id);
-        e.dataTransfer.effectAllowed = "move";
-        onFreemoveDragStart?.(deal);
-      }}
-      onDragEnd={() => onFreemoveDragEnd?.()}
     >
-      {freemoveVisible && onFreemoveToggle && onFreemoveMove && (
-        <FreemoveControl
-          deal={deal}
-          visible
-          active={!!freemoveActive}
-          busy={busy}
-          onToggle={onFreemoveToggle}
-          onMove={onFreemoveMove}
-        />
-      )}
       <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl" style={{ backgroundColor: color }} />
       <div className="pl-2">
         <div className="flex items-start justify-between mb-1.5 gap-2">
@@ -338,6 +271,17 @@ function DealCard({
               <Calendar className="w-3 h-3" /> Brief
             </button>
           )}
+          {!staffTools && canUsePrevious && canPrevious && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onPrevious(deal)}
+              className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-50"
+              data-testid={`btn-previous-${deal.id}`}
+            >
+              <ArrowLeft className="w-3 h-3" /> {prevAdvanceLabel(deal.stage) ?? "Previous"}
+            </button>
+          )}
           {!staffTools && canAdvance && (
             <button
               type="button"
@@ -389,8 +333,6 @@ export default function Pipeline() {
   const [meetingPendingDeal, setMeetingPendingDeal] = useState<Deal | null>(null);
   const [meetingBriefEditOnly, setMeetingBriefEditOnly] = useState(false);
   const [meetingBriefBusy, setMeetingBriefBusy] = useState(false);
-  const [freemoveDealId, setFreemoveDealId] = useState<string | null>(null);
-  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [dealForm, setDealForm] = useState({ lead_id: "", value: "", close_date: "", currency: "USD" as "USD" | "DZD" });
   const { formatMoney, convertAmount, displayCurrency } = useCurrency();
   const { data: platformSettings } = useSettings();
@@ -399,6 +341,7 @@ export default function Pipeline() {
   const { data: activities = [] } = useActivities();
   const activitiesByLead = useMemo(() => groupActivitiesByLead(activities), [activities]);
   const repId = effectiveRepId ?? user?.id;
+  const canUsePrevious = repHasPipelinePrevious(repId, platformSettings?.previous_rep_ids ?? []);
   const { data: deals = [], isLoading: dealsLoading } = useDeals(repId);
   const { data: payments = [] } = usePayments();
   const paymentByLeadId = useMemo(
@@ -448,12 +391,6 @@ export default function Pipeline() {
   const wonDeals = useMemo(() => terminalBoardDeals(deals, "WON"), [deals]);
   const lostDeals = useMemo(() => terminalBoardDeals(deals, "LOST"), [deals]);
   const busy = updateStage.isPending || create.isPending || meetingBriefBusy;
-  const canFreemove = repHasFreemove(platformSettings, repId);
-  const dealById = useMemo(() => new Map(deals.map((d) => [d.id, d])), [deals]);
-
-  const handleFreemoveToggle = (deal: Deal) => {
-    setFreemoveDealId((current) => (current === deal.id ? null : deal.id));
-  };
 
   const totalValue = pipelineDeals.reduce((s, d) => s + convertAmount(d.value, d.currency), 0);
   const wonValue = wonDeals.reduce((s, d) => {
@@ -479,6 +416,38 @@ export default function Pipeline() {
       toast({ title: "Stage updated", description: `Moved to ${STATUS_LABELS[next] ?? next}.` });
     } catch (err) {
       toast({ title: "Update failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
+    }
+  };
+
+  const handlePrevious = async (deal: Deal) => {
+    if (!canStaffOverride && !canUsePrevious) return;
+
+    const prev = pipelinePreviousStage(deal.stage);
+    if (!prev) return;
+
+    const leaving = normalizePipelineStage(deal.stage);
+    let confirmMsg: string | null = null;
+    if (leaving === "WON") {
+      confirmMsg = `Move "${deal.lead_name}" back to ${STATUS_LABELS.MEETING_PENDING}? This reverses payments, commissions, and client revenue from this win.`;
+    } else if (leaving === "MEETING_PENDING") {
+      confirmMsg = `Move "${deal.lead_name}" back to ${STATUS_LABELS[prev]}? The meeting brief will be deleted.`;
+    }
+
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+
+    try {
+      const newStage = await moveDealToPreviousStage(deal.id, deal.lead_id, deal.stage);
+      await invalidatePipeline();
+      await queryClient.invalidateQueries({ queryKey: queryKeys.clients });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.payments });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.commissions });
+      toast({ title: "Stage reverted", description: `Moved back to ${STATUS_LABELS[newStage]}.` });
+    } catch (err) {
+      toast({
+        title: "Could not go back",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
     }
   };
 
@@ -623,41 +592,6 @@ export default function Pipeline() {
     }
   };
 
-  const handleFreemoveMove = async (deal: Deal, target: FreemoveTarget) => {
-    setFreemoveDealId(null);
-    setDropTarget(null);
-    if (target.kind === "leads") {
-      const leadsReturn = LEADS_RETURN_OPTIONS.find((o) => o.value === target.value);
-      if (leadsReturn) await handleReturnToBoard(deal, leadsReturn.status);
-      return;
-    }
-    if (target.value === deal.stage) return;
-    await handleStageChange(deal, target.value);
-  };
-
-  const handleFreemoveDrop = async (dealId: string, stage: DropTarget) => {
-    const deal = dealById.get(dealId);
-    if (!deal || deal.stage === stage) {
-      setFreemoveDealId(null);
-      setDropTarget(null);
-      return;
-    }
-    setFreemoveDealId(null);
-    setDropTarget(null);
-    await handleStageChange(deal, stage);
-  };
-
-  const freemoveProps = canFreemove
-    ? {
-        freemoveVisible: true as const,
-        freemoveActive: (id: string) => freemoveDealId === id,
-        onFreemoveToggle: handleFreemoveToggle,
-        onFreemoveMove: handleFreemoveMove,
-        onFreemoveDragStart: () => {},
-        onFreemoveDragEnd: () => setDropTarget(null),
-      }
-    : null;
-
   const handleCreateDeal = async (e: React.FormEvent) => {
     e.preventDefault();
     const lead = leads.find((l) => l.id === dealForm.lead_id);
@@ -694,7 +628,7 @@ export default function Pipeline() {
           <div>
             <div className="flex items-center gap-1.5">
               <h1 className="font-display text-2xl font-bold text-foreground">Pipeline</h1>
-              <PipelineOperationsHelp showStaffNote={canStaffOverride} showFreemoveNote={canFreemove} />
+              <PipelineOperationsHelp showStaffNote={canStaffOverride} showPreviousNote={canUsePrevious} />
             </div>
             <p className="text-sm text-muted-foreground mt-0.5">
               {canStaffOverride && effectiveRep ? (
@@ -721,14 +655,7 @@ export default function Pipeline() {
             const stageValue = stageDeals.reduce((s, d) => s + convertAmount(d.value, d.currency), 0);
             const color = STATUS_COLORS[stage];
             return (
-              <PipelineDropColumn
-                key={stage}
-                dropKey={stage}
-                dropHighlight={dropTarget}
-                onDragOver={setDropTarget}
-                onDrop={handleFreemoveDrop}
-                className="flex-shrink-0 w-80"
-              >
+              <div key={stage} className="flex-shrink-0 w-80">
                 <div className="flex items-center gap-2 mb-1">
                   <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
                   <span className="text-sm font-semibold text-foreground">{STATUS_LABELS[stage]}</span>
@@ -746,6 +673,7 @@ export default function Pipeline() {
                       busy={busy}
                       staffTools={canStaffOverride}
                       onAdvance={handleAdvance}
+                      onPrevious={handlePrevious}
                       onStageChange={canStaffOverride ? handleStageChange : undefined}
                       onWon={openWonModal}
                       onLost={handleLost}
@@ -754,12 +682,6 @@ export default function Pipeline() {
                       onViewActivities={setActivityLeadId}
                       onViewMeetingBrief={(d) => openMeetingBrief(d, true)}
                       formatMoney={formatMoney}
-                      freemoveVisible={freemoveProps?.freemoveVisible}
-                      freemoveActive={freemoveProps?.freemoveActive(deal.id)}
-                      onFreemoveToggle={freemoveProps?.onFreemoveToggle}
-                      onFreemoveMove={freemoveProps?.onFreemoveMove}
-                      onFreemoveDragStart={freemoveProps?.onFreemoveDragStart}
-                      onFreemoveDragEnd={freemoveProps?.onFreemoveDragEnd}
                     />
                   ))}
                   {stageDeals.length === 0 && (
@@ -768,17 +690,11 @@ export default function Pipeline() {
                     </div>
                   )}
                 </div>
-              </PipelineDropColumn>
+              </div>
             );
           })}
 
-          <PipelineDropColumn
-            dropKey="WON"
-            dropHighlight={dropTarget}
-            onDragOver={setDropTarget}
-            onDrop={handleFreemoveDrop}
-            className="flex-shrink-0 w-56"
-          >
+          <div className="flex-shrink-0 w-56">
             <div className="flex items-center gap-2 mb-1">
               <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
               <span className="text-sm font-semibold text-foreground">Won</span>
@@ -791,20 +707,24 @@ export default function Pipeline() {
                 return (
                   <TerminalDealCard
                     key={deal.id}
-                    deal={deal}
                     variant="won"
-                    freemoveVisible={!!freemoveProps}
-                    freemoveActive={freemoveProps?.freemoveActive(deal.id) ?? false}
-                    freemoveBusy={busy}
-                    onFreemoveToggle={handleFreemoveToggle}
-                    onFreemoveMove={handleFreemoveMove}
-                    onDragStart={() => {}}
-                    onDragEnd={() => setDropTarget(null)}
-                    footer={canStaffOverride ? (
-                      <div className="mt-2 pt-2 border-t border-emerald-200/80">
-                        <StageSelect deal={deal} busy={busy} onChange={handleStageChange} />
+                    footer={(
+                      <div className="mt-2 pt-2 border-t border-emerald-200/80 space-y-2">
+                        {!canStaffOverride && canUsePrevious && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handlePrevious(deal)}
+                            className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border border-emerald-300 bg-white/80 text-emerald-800 hover:bg-white disabled:opacity-50"
+                          >
+                            <ArrowLeft className="w-3 h-3" /> {prevAdvanceLabel(deal.stage)}
+                          </button>
+                        )}
+                        {canStaffOverride && (
+                          <StageSelect deal={deal} busy={busy} onChange={handleStageChange} />
+                        )}
                       </div>
-                    ) : undefined}
+                    )}
                   >
                     <button
                       type="button"
@@ -814,7 +734,7 @@ export default function Pipeline() {
                         if (client) setLocation(`/clients/${client.id}`);
                         else setLocation("/clients");
                       }}
-                      className="w-full text-left hover:opacity-80 transition-opacity pr-7"
+                      className="w-full text-left hover:opacity-80 transition-opacity"
                     >
                       <div className="font-semibold text-emerald-800">{deal.lead_name}</div>
                       <div className="text-emerald-600 mt-0.5">{formatClientLtvAmount(wonAmount.amount, wonAmount.currency)}</div>
@@ -827,15 +747,9 @@ export default function Pipeline() {
                 <div className="border-2 border-dashed border-border rounded-lg p-4 text-center text-xs text-muted-foreground">No won deals</div>
               )}
             </div>
-          </PipelineDropColumn>
+          </div>
 
-          <PipelineDropColumn
-            dropKey="LOST"
-            dropHighlight={dropTarget}
-            onDragOver={setDropTarget}
-            onDrop={handleFreemoveDrop}
-            className="flex-shrink-0 w-56"
-          >
+          <div className="flex-shrink-0 w-56">
             <div className="flex items-center gap-2 mb-1">
               <div className="w-2.5 h-2.5 rounded-full bg-gray-400" />
               <span className="text-sm font-semibold text-foreground">Lost</span>
@@ -846,22 +760,26 @@ export default function Pipeline() {
               {lostDeals.map((deal) => (
                 <TerminalDealCard
                   key={deal.id}
-                  deal={deal}
                   variant="lost"
-                  freemoveVisible={!!freemoveProps}
-                  freemoveActive={freemoveProps?.freemoveActive(deal.id) ?? false}
-                  freemoveBusy={busy}
-                  onFreemoveToggle={handleFreemoveToggle}
-                  onFreemoveMove={handleFreemoveMove}
-                  onDragStart={() => {}}
-                  onDragEnd={() => setDropTarget(null)}
-                  footer={canStaffOverride ? (
-                    <div className="mt-2 pt-2 border-t border-border">
-                      <StageSelect deal={deal} busy={busy} onChange={handleStageChange} />
+                  footer={(
+                    <div className="mt-2 pt-2 border-t border-border space-y-2">
+                      {!canStaffOverride && canUsePrevious && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handlePrevious(deal)}
+                          className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-50"
+                        >
+                          <ArrowLeft className="w-3 h-3" /> {prevAdvanceLabel(deal.stage)}
+                        </button>
+                      )}
+                      {canStaffOverride && (
+                        <StageSelect deal={deal} busy={busy} onChange={handleStageChange} />
+                      )}
                     </div>
-                  ) : undefined}
+                  )}
                 >
-                  <div className="pr-7">
+                  <div>
                     <div className="font-semibold text-foreground">{deal.lead_name}</div>
                     <div className="text-muted-foreground mt-0.5">{formatMoney(deal.value, deal.currency)}</div>
                   </div>
@@ -871,7 +789,7 @@ export default function Pipeline() {
                 <div className="border-2 border-dashed border-border rounded-lg p-4 text-center text-xs text-muted-foreground">No lost deals</div>
               )}
             </div>
-          </PipelineDropColumn>
+          </div>
         </div>
       </div>
 

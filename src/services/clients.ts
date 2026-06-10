@@ -33,12 +33,9 @@ async function loadPruneContext(): Promise<{
   return { leads, payments };
 }
 
-/** Remove won-deal clients with $0 LTV (no received payments). */
+/** Remove clients with $0 LTV (no received payments). */
 export async function pruneZeroLtvClients(): Promise<number> {
-  const { data, error } = await supabase
-    .from("clients")
-    .select("*")
-    .gt("deals_count", 0);
+  const { data, error } = await supabase.from("clients").select("*");
   if (error) throw error;
 
   const candidates = (data ?? []).map((r) => mapClient(r as Record<string, unknown>));
@@ -55,7 +52,6 @@ export async function pruneZeroLtvClients(): Promise<number> {
 }
 
 export async function deleteClientIfZeroLtv(client: Client): Promise<boolean> {
-  if (client.deals_count <= 0) return false;
   const { leads, payments } = await loadPruneContext();
   if (!shouldPruneZeroLtvClient(client, leads, payments)) return false;
   await deleteClient(client.id);
@@ -67,6 +63,12 @@ export async function fetchClients(): Promise<Client[]> {
   const { data, error } = await supabase.from("clients").select("*").order("company");
   if (error) throw error;
   return (data ?? []).map((r) => mapClient(r as Record<string, unknown>));
+}
+
+export async function findClientByWonDeal(dealId: string): Promise<Client | null> {
+  const { data, error } = await supabase.from("clients").select("*").eq("won_deal_id", dealId).maybeSingle();
+  if (error) throw error;
+  return data ? mapClient(data as Record<string, unknown>) : null;
 }
 
 export async function findClientByLead(company?: string | null, email?: string): Promise<Client | null> {
@@ -85,6 +87,7 @@ export async function findClientByLead(company?: string | null, email?: string):
 /** Create or update a client when a deal is marked won (app-layer fallback alongside DB trigger). */
 export async function ensureClientFromWonDeal(
   input: {
+    dealId: string;
     leadId: string;
     company: string;
     contact: string;
@@ -100,9 +103,12 @@ export async function ensureClientFromWonDeal(
   const company = input.company?.trim() || "Unknown company";
   const contact = input.contact?.trim() || "Contact";
 
+  const fromWin = await findClientByWonDeal(input.dealId);
+  if (fromWin) return fromWin;
+
   const existing = await findClientByLead(company, email);
 
-  if (existing) {
+  if (existing && !existing.won_deal_id) {
     const { data, error } = await supabase
       .from("clients")
       .update({
@@ -136,6 +142,7 @@ export async function ensureClientFromWonDeal(
     deals_count: 1,
     last_activity: "Deal won",
     currency,
+    won_deal_id: input.dealId,
   };
 
   let { data, error } = await supabase.from("clients").insert(row).select().single();
@@ -275,21 +282,21 @@ export async function syncClientLtvFromPayments(client: Client): Promise<Client 
       status: String(p.status),
     })),
   );
-  let result = client;
-  if (summed) {
-    const { data, error } = await supabase
-      .from("clients")
-      .update({
-        ltv: summed.amount,
-        currency: summed.currency,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", client.id)
-      .select()
-      .single();
-    if (error) throw error;
-    result = mapClient(data as Record<string, unknown>);
-  }
+  const nextLtv = summed?.amount ?? 0;
+  const nextCurrency = summed?.currency ?? client.currency;
+
+  const { data, error } = await supabase
+    .from("clients")
+    .update({
+      ltv: nextLtv,
+      currency: nextCurrency,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", client.id)
+    .select()
+    .single();
+  if (error) throw error;
+  const result = mapClient(data as Record<string, unknown>);
 
   if (await deleteClientIfZeroLtv(result)) return null;
   return result;

@@ -31,6 +31,11 @@ export async function getMeetingBriefByDeal(dealId: string): Promise<MeetingBrie
   return data ? mapRow(data as Record<string, unknown>) : null;
 }
 
+export async function deleteMeetingBriefForDeal(dealId: string) {
+  const { error } = await supabase.from("meeting_briefs").delete().eq("deal_id", dealId);
+  if (error) throw error;
+}
+
 export async function upsertMeetingBrief(input: MeetingBriefInput): Promise<MeetingBrief> {
   const payload = {
     deal_id: input.deal_id,
