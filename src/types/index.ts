@@ -1,6 +1,18 @@
 export type UserRole = "admin" | "sales_rep";
 export type RepTier = "BRONZE" | "SILVER" | "GOLD" | "DIAMOND";
-export type LeadStatus = "NEW" | "ASSIGNED" | "CONTACTED" | "QUALIFYING" | "PROPOSAL" | "NEGOTIATION" | "WON" | "LOST" | "DORMANT";
+export type LeadStatus =
+  | "NEW"
+  | "ASSIGNED"
+  | "CONTACTED"
+  | "QUALIFIED"
+  | "FOLLOW_UP"
+  | "MEETING_PENDING"
+  | "QUALIFYING"
+  | "PROPOSAL"
+  | "NEGOTIATION"
+  | "WON"
+  | "LOST"
+  | "DORMANT";
 export type PaymentStatus = "RECEIVED" | "PENDING" | "PARTIAL" | "REFUNDED";
 export type ActivityType = "CALL" | "EMAIL" | "MEETING" | "NOTE" | "TASK" | "STAGE_CHANGE" | "WHATSAPP";
 export type SplitMode = "ROUND_ROBIN" | "WEIGHTED" | "PERFORMANCE" | "SOURCE" | "GEOGRAPHY" | "INDUSTRY";
@@ -80,7 +92,8 @@ export interface Client {
 
 export interface Payment {
   id: string;
-  deal_id: string;
+  lead_id: string;
+  deal_id: string | null;
   invoice_ref: string;
   company: string;
   deal_value: number;
@@ -168,6 +181,7 @@ export interface PlatformSettings {
   usd_to_dzd_rate: number;
   date_format: string;
   notification_prefs: Record<string, boolean>;
+  freemove_rep_ids: string[];
 }
 
 export interface Notification {

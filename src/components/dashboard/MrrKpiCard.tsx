@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { formatClientLtvAmount } from "@/lib/client-ltv";
 import { buildMrrHistory, currentMrr, mrrMonthOverMonthChange } from "@/lib/mrr";
-import type { Deal, Payment } from "@/types";
+import type { Lead, Payment } from "@/types";
 
 function ChangeBadge({ value }: { value?: number | null }) {
   if (value == null) return null;
@@ -23,18 +23,18 @@ function ChangeBadge({ value }: { value?: number | null }) {
 
 type MrrKpiCardProps = {
   payments: Payment[];
-  deals: Deal[];
+  leads: Lead[];
   isAdmin: boolean;
   repId?: string;
 };
 
-export function MrrKpiCard({ payments, deals, isAdmin, repId }: MrrKpiCardProps) {
+export function MrrKpiCard({ payments, leads, isAdmin, repId }: MrrKpiCardProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const scopeRepId = isAdmin ? undefined : repId;
 
   const history = useMemo(
-    () => buildMrrHistory(payments, deals, { repId: scopeRepId, months: 12 }),
-    [payments, deals, scopeRepId],
+    () => buildMrrHistory(payments, leads, { repId: scopeRepId, months: 12 }),
+    [payments, leads, scopeRepId],
   );
   const mrr = useMemo(() => currentMrr(history), [history]);
   const change = useMemo(() => mrrMonthOverMonthChange(history), [history]);

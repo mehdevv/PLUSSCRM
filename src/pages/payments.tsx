@@ -40,9 +40,11 @@ export default function Payments() {
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.deal_id || !form.invoice_ref || !form.amount) return;
+    const deal = deals.find((d) => d.id === form.deal_id);
+    if (!deal || !form.invoice_ref || !form.amount) return;
     await create.mutateAsync({
-      deal_id: form.deal_id,
+      lead_id: deal.lead_id,
+      deal_id: deal.id,
       invoice_ref: form.invoice_ref,
       amount: Number(form.amount),
       method: form.method,

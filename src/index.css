@@ -343,3 +343,22 @@
 .scrollbar-minimal::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.4);
 }
+
+/* Wireframe whiteboard (tldraw) */
+.wireframe-canvas {
+  position: relative;
+  isolation: isolate;
+}
+
+.wireframe-canvas .tl-container {
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.wireframe-present .tlui-layout {
+  --color-background: hsl(var(--background));
+}
+
+.wireframe-canvas .tlui-button[data-state="selected"],
+.wireframe-canvas .tlui-button__menu[data-state="open"] {
+  --tl-color-selected: #1a1aff;
+}

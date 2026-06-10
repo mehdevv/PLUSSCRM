@@ -15,33 +15,33 @@ type MrrPayment = {
   currency: string;
   status: string;
   received_at: string | null;
-  deal_id: string;
+  lead_id: string;
 };
 
-type MrrDeal = { id: string; rep_id: string };
+type MrrLead = { id: string; assigned_to: string | null };
 
 function eligiblePayments(
   payments: MrrPayment[],
-  deals: MrrDeal[],
+  leads: MrrLead[],
   repId?: string,
 ): MrrPayment[] {
-  const dealRep = new Map(deals.map((d) => [d.id, d.rep_id]));
+  const leadRep = new Map(leads.map((l) => [l.id, l.assigned_to]));
   return payments.filter((p) => {
     if (!COUNTED_STATUSES.has(p.status) || !p.received_at) return false;
     if (!repId) return true;
-    return dealRep.get(p.deal_id) === repId;
+    return leadRep.get(p.lead_id) === repId;
   });
 }
 
 /** Last N calendar months of received payment totals (raw amounts, no conversion). */
 export function buildMrrHistory(
   payments: MrrPayment[],
-  deals: MrrDeal[],
+  leads: MrrLead[],
   options?: { repId?: string; months?: number },
 ): MrrMonth[] {
   const months = options?.months ?? 12;
   const repId = options?.repId;
-  const eligible = eligiblePayments(payments, deals, repId);
+  const eligible = eligiblePayments(payments, leads, repId);
   const now = startOfMonth(new Date());
 
   const buckets = new Map<string, { amount: number; currency: CurrencyCode }>();

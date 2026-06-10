@@ -1,5 +1,5 @@
 import { formatCurrencyAmount, isCurrencyCode, type CurrencyCode } from "@/lib/currency";
-import type { Client, Deal, Payment } from "@/types";
+import type { Client, Lead, Payment } from "@/types";
 
 const COUNTED_STATUSES = new Set(["RECEIVED", "PARTIAL"]);
 
@@ -7,49 +7,37 @@ function norm(value?: string | null): string {
   return value?.trim().toLowerCase() ?? "";
 }
 
-function dealBelongsToClient(
-  deal: Pick<Deal, "lead_id" | "company" | "stage" | "rep_id">,
+function leadBelongsToClient(
+  lead: Pick<Lead, "id" | "company" | "email" | "assigned_to">,
   client: Pick<Client, "company" | "manager_id" | "email">,
-  leadEmailById?: Map<string, string>,
 ): boolean {
-  if (deal.stage !== "WON" || deal.rep_id !== client.manager_id) return false;
+  if (lead.assigned_to !== client.manager_id) return false;
 
   const clientCompany = norm(client.company);
+  const leadCompany = norm(lead.company);
+  if (clientCompany && leadCompany && clientCompany === leadCompany) return true;
+
   const clientEmail = norm(client.email);
-  if (clientCompany && norm(deal.company) === clientCompany) return true;
-
-  if (clientEmail && leadEmailById) {
-    const leadEmail = norm(leadEmailById.get(deal.lead_id));
-    if (leadEmail && leadEmail === clientEmail) return true;
-  }
-
-  return false;
+  const leadEmail = norm(lead.email);
+  return Boolean(clientEmail && leadEmail && clientEmail === leadEmail);
 }
 
-/** Won deal ids for a client (company / email match on rep's deals). */
-export function wonDealIdsForClient(
+export function clientLeadIds(
   client: Pick<Client, "company" | "manager_id" | "email">,
-  deals: Pick<Deal, "id" | "lead_id" | "company" | "stage" | "rep_id">[],
-  leadEmailById?: Map<string, string>,
+  leads: Pick<Lead, "id" | "company" | "email" | "assigned_to">[],
 ): Set<string> {
   return new Set(
-    deals
-      .filter((d) => dealBelongsToClient(d, client, leadEmailById))
-      .map((d) => d.id),
+    leads.filter((l) => leadBelongsToClient(l, client)).map((l) => l.id),
   );
 }
 
-export function paymentsForClient<T extends Pick<Payment, "deal_id">>(
+export function paymentsForClient<T extends Pick<Payment, "lead_id">>(
   client: Pick<Client, "company" | "manager_id" | "email">,
-  deals: Pick<Deal, "id" | "lead_id" | "company" | "stage" | "rep_id">[],
+  leads: Pick<Lead, "id" | "company" | "email" | "assigned_to">[],
   payments: T[],
-  leadEmailById?: Map<string, string>,
 ): T[] {
-  const dealById = new Map(deals.map((d) => [d.id, d]));
-  return payments.filter((p) => {
-    const deal = dealById.get(p.deal_id);
-    return deal ? dealBelongsToClient(deal, client, leadEmailById) : false;
-  });
+  const ids = clientLeadIds(client, leads);
+  return payments.filter((p) => ids.has(p.lead_id));
 }
 
 /** Sum raw `payments.amount` values (no currency conversion). */
@@ -68,14 +56,13 @@ export function sumPaymentAmounts(
   return { amount, currency };
 }
 
-/** LTV for display: sum of received payment amounts only (never stale client.ltv). */
+/** LTV for display: sum of received payment amounts for the client's pipeline leads. */
 export function resolveClientLtv(
   client: Client,
-  deals: Pick<Deal, "id" | "lead_id" | "company" | "stage" | "rep_id">[],
-  payments: Pick<Payment, "deal_id" | "amount" | "currency" | "status">[],
-  leadEmailById?: Map<string, string>,
+  leads: Pick<Lead, "id" | "company" | "email" | "assigned_to">[],
+  payments: Pick<Payment, "lead_id" | "amount" | "currency" | "status">[],
 ): { amount: number; currency: string } {
-  const clientPayments = paymentsForClient(client, deals, payments, leadEmailById);
+  const clientPayments = paymentsForClient(client, leads, payments);
   const summed = sumPaymentAmounts(clientPayments);
   const currency = summed?.currency
     ?? (isCurrencyCode(client.currency) ? client.currency : "DZD");
@@ -89,14 +76,13 @@ export function resolveClientLtv(
 /** Sum payment-based LTV across clients (grouped by currency; prefers DZD). */
 export function sumClientsLtv(
   clients: Client[],
-  deals: Pick<Deal, "id" | "lead_id" | "company" | "stage" | "rep_id">[],
-  payments: Pick<Payment, "deal_id" | "amount" | "currency" | "status">[],
-  leadEmailById?: Map<string, string>,
+  leads: Pick<Lead, "id" | "company" | "email" | "assigned_to">[],
+  payments: Pick<Payment, "lead_id" | "amount" | "currency" | "status">[],
 ): { amount: number; currency: CurrencyCode } {
   const byCurrency = new Map<CurrencyCode, number>();
 
   for (const client of clients) {
-    const ltv = resolveClientLtv(client, deals, payments, leadEmailById);
+    const ltv = resolveClientLtv(client, leads, payments);
     const code: CurrencyCode = isCurrencyCode(ltv.currency) ? ltv.currency : "DZD";
     byCurrency.set(code, (byCurrency.get(code) ?? 0) + ltv.amount);
   }
@@ -108,6 +94,16 @@ export function sumClientsLtv(
   const entry = [...byCurrency.entries()][0];
   if (entry) return { amount: entry[1], currency: entry[0] };
   return { amount: 0, currency: "DZD" };
+}
+
+/** Won-deal clients with no recorded revenue are removed automatically. */
+export function shouldPruneZeroLtvClient(
+  client: Pick<Client, "deals_count">,
+  leads: Pick<Lead, "id" | "company" | "email" | "assigned_to">[],
+  payments: Pick<Payment, "lead_id" | "amount" | "currency" | "status">[],
+): boolean {
+  if (client.deals_count <= 0) return false;
+  return resolveClientLtv(client as Client, leads, payments).amount <= 0;
 }
 
 /** Show LTV in its stored/payment currency without converting to display currency. */

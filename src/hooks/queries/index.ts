@@ -25,6 +25,7 @@ import { flagClientRenewal } from "@/services/clients";
 import { fetchPlatformSettings, updatePlatformSettings, updatePassword } from "@/services/settings";
 import { fetchNotifications, markNotificationRead } from "@/services/notifications";
 import { useAuth } from "@/hooks/useAuth";
+import { ACTIVE_PIPELINE_STAGES } from "@/lib/constants";
 import type { Lead, LeadStatus, SplitMode } from "@/types";
 
 export function useSalesReps() {
@@ -179,6 +180,11 @@ export function useDealMutations() {
     qc.invalidateQueries({ queryKey: ["deals"] });
     qc.invalidateQueries({ queryKey: ["leads"] });
     qc.invalidateQueries({ queryKey: queryKeys.clients });
+    qc.invalidateQueries({ queryKey: queryKeys.payments });
+    qc.invalidateQueries({ queryKey: queryKeys.commissions });
+    qc.invalidateQueries({ queryKey: queryKeys.leaderboard("monthly") });
+    qc.invalidateQueries({ queryKey: ["dashboardKpis"] });
+    qc.invalidateQueries({ queryKey: ["revenueTrend"] });
   };
   return {
     create: useMutation({ mutationFn: createDeal, onSuccess: invalidate }),
@@ -188,7 +194,7 @@ export function useDealMutations() {
       onMutate: async ({ id, stage, leadId }) => {
         await qc.cancelQueries({ queryKey: ["deals"] });
         const snapshots = qc.getQueriesData<Deal[]>({ queryKey: ["deals"] });
-        const activeStages: LeadStatus[] = ["CONTACTED", "QUALIFYING", "NEGOTIATION", "PROPOSAL"];
+        const activeStages: LeadStatus[] = [...ACTIVE_PIPELINE_STAGES];
         qc.setQueriesData<Deal[]>({ queryKey: ["deals"] }, (old) => {
           if (!old) return old;
           let next = old.map((d) => (d.id === id ? { ...d, stage } : d));

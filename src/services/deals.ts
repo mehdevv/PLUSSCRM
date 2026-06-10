@@ -1,12 +1,24 @@
+import {
+  ACTIVE_PIPELINE_STAGES,
+  normalizePipelineStage,
+  PIPELINE_KANBAN_STAGES,
+  toDbPipelineStage,
+} from "@/lib/constants";
 import { supabase } from "@/lib/supabase";
 import { mapDeal } from "@/lib/mappers";
+import {
+  deleteClientIfZeroLtv,
+  findClientByLead,
+  syncClientLtvFromPayments,
+} from "@/services/clients";
+import { deletePaymentsForLead } from "@/services/payments";
 import type { Deal, LeadStatus } from "@/types";
 
 export async function fetchDeals(repId?: string): Promise<Deal[]> {
   let q = supabase.from("deals").select("*, leads(first_name, last_name, company, value)").order("created_at", { ascending: false });
   if (repId) q = q.eq("rep_id", repId);
   const { data, error } = await q;
-  if (error) throw error;
+  if (error) throw dealError(error);
   return (data ?? []).map((r) => {
     const lead = (r as { leads?: Record<string, unknown> }).leads;
     return mapDeal(r as Record<string, unknown>, lead);
@@ -14,17 +26,39 @@ export async function fetchDeals(repId?: string): Promise<Deal[]> {
 }
 
 const LEAD_SYNC_STAGES: LeadStatus[] = [
-  "CONTACTED", "QUALIFYING", "PROPOSAL", "NEGOTIATION", "WON", "LOST",
+  ...ACTIVE_PIPELINE_STAGES,
+  "WON",
+  "LOST",
 ];
 
-function dealError(error: { message: string; details?: string; hint?: string }): Error {
+function dealError(error: { message: string; details?: string; hint?: string; code?: string }): Error {
   const detail = [error.message, error.details, error.hint].filter(Boolean).join(" — ");
+  if (detail.includes("invalid input value for enum lead_status")) {
+    return new Error(
+      `${detail} — Run supabase/migrations/019_pipeline_workflow.sql in the Supabase SQL editor, then reload the API schema.`,
+    );
+  }
   return new Error(detail || "Could not update deal");
+}
+
+function isActivePipelineStage(stage: LeadStatus): boolean {
+  return ACTIVE_PIPELINE_STAGES.includes(stage);
+}
+
+/** Fetch deals for a lead and filter active pipeline stages in-app (avoids invalid enum in PostgREST .in()). */
+async function fetchActiveDealsForLead(leadId: string) {
+  const { data, error } = await supabase
+    .from("deals")
+    .select("*, leads(first_name, last_name, company, value)")
+    .eq("lead_id", leadId)
+    .order("created_at", { ascending: false });
+  if (error) throw dealError(error);
+  return (data ?? []).filter((r) => isActivePipelineStage(r.stage as LeadStatus));
 }
 
 async function syncLeadStatus(leadId: string, status: LeadStatus) {
   const { error } = await supabase.from("leads").update({
-    status,
+    status: toDbPipelineStage(status),
     updated_at: new Date().toISOString(),
   }).eq("id", leadId);
   if (error) throw dealError(error);
@@ -32,26 +66,41 @@ async function syncLeadStatus(leadId: string, status: LeadStatus) {
 
 export async function createDeal(input: { lead_id: string; rep_id: string; value: number; stage?: LeadStatus; close_date?: string; currency?: string }) {
   const stage = input.stage ?? "CONTACTED";
+  const dbStage = toDbPipelineStage(stage);
   const { data, error } = await supabase.from("deals").insert({
     lead_id: input.lead_id,
     rep_id: input.rep_id,
     value: input.value,
-    stage,
+    stage: dbStage,
     close_date: input.close_date ?? null,
     currency: input.currency ?? "USD",
   }).select("*, leads(first_name, last_name, company, value)").single();
-  if (error) throw error;
+  if (error) throw dealError(error);
   await syncLeadStatus(input.lead_id, stage);
   const lead = (data as { leads?: Record<string, unknown> }).leads;
   return mapDeal(data as Record<string, unknown>, lead);
 }
 
 export async function deleteDeal(id: string) {
-  await supabase.from("payments").delete().eq("deal_id", id);
-  await supabase.from("commissions").delete().eq("deal_id", id);
-  await supabase.from("activities").delete().eq("deal_id", id);
+  const { data: deal, error: fetchErr } = await supabase
+    .from("deals")
+    .select("lead_id, stage, rep_id")
+    .eq("id", id)
+    .maybeSingle();
+  if (fetchErr) throw dealError(fetchErr);
+  if (!deal) return;
+
+  const stage = normalizePipelineStage((deal.stage as LeadStatus) ?? "CONTACTED");
+  if (stage === "WON") {
+    await revertWonDealEffects(id, deal.lead_id as string, String(deal.rep_id ?? ""));
+  }
+
+  const { error: commErr } = await supabase.from("commissions").delete().eq("deal_id", id);
+  if (commErr) throw dealError(commErr);
+  const { error: actErr } = await supabase.from("activities").delete().eq("deal_id", id);
+  if (actErr) throw dealError(actErr);
   const { error } = await supabase.from("deals").delete().eq("id", id);
-  if (error) throw error;
+  if (error) throw dealError(error);
 }
 
 export async function syncDealValue(
@@ -69,15 +118,81 @@ export async function syncDealValue(
 }
 
 export async function updateDealStage(id: string, stage: LeadStatus) {
-  const { error } = await supabase.from("deals").update({
-    stage,
+  const payload: Record<string, unknown> = {
+    stage: toDbPipelineStage(stage),
     stage_changed_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }).eq("id", id);
+  };
+  if (stage !== "WON") {
+    payload.won_at = null;
+  }
+  const { error } = await supabase.from("deals").update(payload).eq("id", id);
   if (error) throw dealError(error);
 }
 
+/** Remove payments, commissions, and client revenue when a deal leaves Won. */
+export async function revertWonDealEffects(dealId: string, leadId: string, repId: string) {
+  const { data: lead, error: leadErr } = await supabase
+    .from("leads")
+    .select("company, email")
+    .eq("id", leadId)
+    .maybeSingle();
+  if (leadErr) throw dealError(leadErr);
+
+  await deletePaymentsForLead(leadId);
+
+  const { data: commission } = await supabase
+    .from("commissions")
+    .select("id")
+    .eq("deal_id", dealId)
+    .maybeSingle();
+  if (commission) {
+    const { error: commErr } = await supabase.from("commissions").delete().eq("deal_id", dealId);
+    if (commErr) throw dealError(commErr);
+    const { data: profile } = await supabase.from("profiles").select("points").eq("id", repId).maybeSingle();
+    if (profile) {
+      await supabase
+        .from("profiles")
+        .update({ points: Math.max(0, Number(profile.points ?? 0) - 100) })
+        .eq("id", repId);
+    }
+  }
+
+  if (!lead) return;
+
+  const client = await findClientByLead(lead.company, lead.email);
+  if (!client || client.manager_id !== repId) return;
+
+  const nextDealsCount = Math.max(0, client.deals_count - 1);
+  await supabase
+    .from("clients")
+    .update({
+      deals_count: nextDealsCount,
+      last_activity: "Deal reopened",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", client.id);
+
+  const updatedClient = { ...client, deals_count: nextDealsCount };
+  const synced = await syncClientLtvFromPayments(updatedClient);
+  if (!synced) {
+    await deleteClientIfZeroLtv(updatedClient);
+  }
+}
+
 export async function updateDealStageWithLead(dealId: string, stage: LeadStatus, leadId: string) {
+  const { data: current, error: currentErr } = await supabase
+    .from("deals")
+    .select("stage, rep_id")
+    .eq("id", dealId)
+    .maybeSingle();
+  if (currentErr) throw dealError(currentErr);
+
+  const previousStage = normalizePipelineStage((current?.stage as LeadStatus) ?? stage);
+  if (previousStage === "WON" && stage !== "WON") {
+    await revertWonDealEffects(dealId, leadId, String(current?.rep_id ?? ""));
+  }
+
   await updateDealStage(dealId, stage);
   if (TERMINAL_DEAL_STAGES.includes(stage)) {
     await removeDuplicateActiveDeals(leadId, dealId);
@@ -87,24 +202,25 @@ export async function updateDealStageWithLead(dealId: string, stage: LeadStatus,
   }
 }
 
-const PIPELINE_FLOW: LeadStatus[] = ["CONTACTED", "QUALIFYING", "NEGOTIATION"];
-
 export function nextPipelineStage(current: LeadStatus): LeadStatus | null {
-  if (current === "PROPOSAL") return "NEGOTIATION";
-  const idx = PIPELINE_FLOW.indexOf(current);
-  if (idx < 0 || idx >= PIPELINE_FLOW.length - 1) return idx === PIPELINE_FLOW.length - 1 ? "WON" : null;
-  return PIPELINE_FLOW[idx + 1];
+  const normalized = normalizePipelineStage(current);
+  const idx = PIPELINE_KANBAN_STAGES.indexOf(normalized);
+  if (idx < 0) return null;
+  if (idx >= PIPELINE_KANBAN_STAGES.length - 1) return "WON";
+  return PIPELINE_KANBAN_STAGES[idx + 1];
 }
 
 export function prevPipelineStage(current: LeadStatus): LeadStatus | null {
-  if (current === "PROPOSAL") return "QUALIFYING";
-  const idx = PIPELINE_FLOW.indexOf(current);
+  const normalized = normalizePipelineStage(current);
+  const idx = PIPELINE_KANBAN_STAGES.indexOf(normalized);
   if (idx <= 0) return null;
-  return PIPELINE_FLOW[idx - 1];
+  return PIPELINE_KANBAN_STAGES[idx - 1];
 }
 
 export const PIPELINE_STAGE_OPTIONS: LeadStatus[] = [
-  "CONTACTED", "QUALIFYING", "NEGOTIATION", "WON", "LOST",
+  ...PIPELINE_KANBAN_STAGES,
+  "WON",
+  "LOST",
 ];
 
 export type LeadsBoardTarget = "ASSIGNED" | "CONTACTED";
@@ -120,7 +236,7 @@ export async function returnLeadToBoard(
     status: target,
     updated_at: new Date().toISOString(),
   }).eq("id", leadId);
-  if (leadErr) throw leadErr;
+  if (leadErr) throw dealError(leadErr);
 }
 
 /** Jump a deal (any current stage) to a new pipeline stage and sync the lead. */
@@ -131,23 +247,20 @@ export async function moveDealToStage(dealId: string, leadId: string, stage: Lea
   await updateDealStageWithLead(dealId, stage, leadId);
 }
 
-const ACTIVE_PIPELINE_STAGES: LeadStatus[] = [
-  "CONTACTED", "QUALIFYING", "NEGOTIATION", "PROPOSAL",
-];
-
 const TERMINAL_DEAL_STAGES: LeadStatus[] = ["WON", "LOST"];
 
 /** Remove extra active pipeline deals for the same lead (keeps one deal when closing). */
 export async function removeDuplicateActiveDeals(leadId: string, keepDealId: string) {
   const { data, error } = await supabase
     .from("deals")
-    .select("id")
+    .select("id, stage")
     .eq("lead_id", leadId)
-    .neq("id", keepDealId)
-    .in("stage", ACTIVE_PIPELINE_STAGES);
+    .neq("id", keepDealId);
   if (error) throw dealError(error);
   for (const row of data ?? []) {
-    await deleteDeal(row.id as string);
+    if (isActivePipelineStage(row.stage as LeadStatus)) {
+      await deleteDeal(row.id as string);
+    }
   }
 }
 
@@ -169,27 +282,19 @@ export async function ensureLeadInPipeline(
 ) {
   const targetStage = ACTIVE_PIPELINE_STAGES.includes(stage) ? stage : "CONTACTED";
 
-  const { data: closedRows } = await supabase
+  const { data: closedRows, error: closedErr } = await supabase
     .from("deals")
-    .select("id, stage")
+    .select("id")
     .eq("lead_id", leadId)
     .in("stage", TERMINAL_DEAL_STAGES)
     .limit(1);
+  if (closedErr) throw dealError(closedErr);
   if (closedRows?.length) {
     throw new Error("This lead already has a closed deal (Won or Lost).");
   }
 
-  const { data: rows, error: fetchErr } = await supabase
-    .from("deals")
-    .select("*, leads(first_name, last_name, company, value)")
-    .eq("lead_id", leadId)
-    .in("stage", ACTIVE_PIPELINE_STAGES)
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  if (fetchErr) throw fetchErr;
-
-  const existing = rows?.[0];
+  const activeRows = await fetchActiveDealsForLead(leadId);
+  const existing = activeRows[0];
   if (existing) {
     const mapped = mapDeal(
       existing as Record<string, unknown>,

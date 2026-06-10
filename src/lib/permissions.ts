@@ -132,6 +132,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { name: "Dashboard", href: "/dashboard", roles: ["admin", "sales_rep"] },
+  { name: "Wireframes", href: "/wireframes", roles: ["admin", "sales_rep"] },
   { name: "Split Rules", href: "/leads/split-rules", roles: ["admin"], section: "assignment" },
   { name: "Queue", href: "/leads/queue", roles: ["admin"], section: "assignment" },
   { name: "All Leads", href: "/leads/all", roles: ["admin"], section: "leads" },

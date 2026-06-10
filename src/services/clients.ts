@@ -1,9 +1,69 @@
 import { supabase } from "@/lib/supabase";
-import { sumPaymentAmounts } from "@/lib/client-ltv";
+import { shouldPruneZeroLtvClient, sumPaymentAmounts } from "@/lib/client-ltv";
+import { clientLeadIds } from "@/lib/client-ltv";
 import { mapClient, mapClientNote, mapClientFile } from "@/lib/mappers";
-import type { Client } from "@/types";
+import type { Client, Lead, Payment, PaymentStatus } from "@/types";
+
+type PrunePayment = Pick<Payment, "lead_id" | "amount" | "currency" | "status">;
+type PruneLead = Pick<Lead, "id" | "company" | "email" | "assigned_to">;
+
+async function loadPruneContext(): Promise<{
+  leads: PruneLead[];
+  payments: PrunePayment[];
+}> {
+  const [leadsRes, paymentsRes] = await Promise.all([
+    supabase.from("leads").select("id, company, email, assigned_to"),
+    supabase.from("payments").select("lead_id, amount, currency, status"),
+  ]);
+  if (leadsRes.error) throw leadsRes.error;
+  if (paymentsRes.error) throw paymentsRes.error;
+
+  const leads = (leadsRes.data ?? []).map((l) => ({
+    id: l.id as string,
+    company: (l.company as string) ?? "",
+    email: (l.email as string) ?? "",
+    assigned_to: (l.assigned_to as string) ?? null,
+  }));
+  const payments: PrunePayment[] = (paymentsRes.data ?? []).map((r) => ({
+    lead_id: r.lead_id as string,
+    amount: Number(r.amount),
+    currency: (r.currency as string) ?? "USD",
+    status: r.status as PaymentStatus,
+  }));
+  return { leads, payments };
+}
+
+/** Remove won-deal clients with $0 LTV (no received payments). */
+export async function pruneZeroLtvClients(): Promise<number> {
+  const { data, error } = await supabase
+    .from("clients")
+    .select("*")
+    .gt("deals_count", 0);
+  if (error) throw error;
+
+  const candidates = (data ?? []).map((r) => mapClient(r as Record<string, unknown>));
+  if (candidates.length === 0) return 0;
+
+  const { leads, payments } = await loadPruneContext();
+  const toRemove = candidates.filter((c) =>
+    shouldPruneZeroLtvClient(c, leads, payments),
+  );
+  for (const client of toRemove) {
+    await deleteClient(client.id);
+  }
+  return toRemove.length;
+}
+
+export async function deleteClientIfZeroLtv(client: Client): Promise<boolean> {
+  if (client.deals_count <= 0) return false;
+  const { leads, payments } = await loadPruneContext();
+  if (!shouldPruneZeroLtvClient(client, leads, payments)) return false;
+  await deleteClient(client.id);
+  return true;
+}
 
 export async function fetchClients(): Promise<Client[]> {
+  await pruneZeroLtvClients();
   const { data, error } = await supabase.from("clients").select("*").order("company");
   if (error) throw error;
   return (data ?? []).map((r) => mapClient(r as Record<string, unknown>));
@@ -35,7 +95,7 @@ export async function ensureClientFromWonDeal(
   managerId: string,
   dealValue: number,
   currency = "USD",
-): Promise<Client> {
+): Promise<Client | null> {
   const email = input.email?.trim() || `lead-${input.leadId}@clients.pluss`;
   const company = input.company?.trim() || "Unknown company";
   const contact = input.contact?.trim() || "Contact";
@@ -58,8 +118,12 @@ export async function ensureClientFromWonDeal(
       .select()
       .single();
     if (error) throw error;
-    return mapClient(data as Record<string, unknown>);
+    const updated = mapClient(data as Record<string, unknown>);
+    if (await deleteClientIfZeroLtv(updated)) return null;
+    return updated;
   }
+
+  if (dealValue <= 0) return null;
 
   const row: Record<string, unknown> = {
     company,
@@ -187,40 +251,21 @@ export async function deleteClient(id: string) {
   if (error) throw error;
 }
 
-function clientMatchesLead(
-  client: Client,
-  lead?: { company?: string | null; email?: string | null } | null,
-): boolean {
-  if (!lead) return false;
-  const clientCompany = client.company?.trim().toLowerCase() ?? "";
-  const leadCompany = lead.company?.trim().toLowerCase() ?? "";
-  if (clientCompany && leadCompany && clientCompany === leadCompany) return true;
-  const clientEmail = client.email?.trim().toLowerCase() ?? "";
-  const leadEmail = lead.email?.trim().toLowerCase() ?? "";
-  return Boolean(clientEmail && leadEmail && clientEmail === leadEmail);
-}
-
 /** Recompute stored LTV from received payments (source of truth for client value). */
-export async function syncClientLtvFromPayments(client: Client): Promise<Client> {
-  const { data: deals, error: dealsErr } = await supabase
-    .from("deals")
-    .select("id, stage, rep_id, leads(company, email)")
-    .eq("stage", "WON")
-    .eq("rep_id", client.manager_id);
-  if (dealsErr) throw dealsErr;
+export async function syncClientLtvFromPayments(client: Client): Promise<Client | null> {
+  const { data: leads, error: leadsErr } = await supabase
+    .from("leads")
+    .select("id, company, email, assigned_to")
+    .eq("assigned_to", client.manager_id);
+  if (leadsErr) throw leadsErr;
 
-  const dealIds = (deals ?? [])
-    .filter((d) => {
-      const lead = (d as { leads?: { company?: string; email?: string } }).leads;
-      return clientMatchesLead(client, lead);
-    })
-    .map((d) => d.id as string);
-  if (dealIds.length === 0) return client;
+  const leadIds = [...clientLeadIds(client, (leads ?? []) as PruneLead[])];
+  if (leadIds.length === 0) return client;
 
   const { data: payments, error: payErr } = await supabase
     .from("payments")
     .select("amount, currency, status")
-    .in("deal_id", dealIds);
+    .in("lead_id", leadIds);
   if (payErr) throw payErr;
 
   const summed = sumPaymentAmounts(
@@ -230,20 +275,24 @@ export async function syncClientLtvFromPayments(client: Client): Promise<Client>
       status: String(p.status),
     })),
   );
-  if (!summed) return client;
+  let result = client;
+  if (summed) {
+    const { data, error } = await supabase
+      .from("clients")
+      .update({
+        ltv: summed.amount,
+        currency: summed.currency,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", client.id)
+      .select()
+      .single();
+    if (error) throw error;
+    result = mapClient(data as Record<string, unknown>);
+  }
 
-  const { data, error } = await supabase
-    .from("clients")
-    .update({
-      ltv: summed.amount,
-      currency: summed.currency,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", client.id)
-    .select()
-    .single();
-  if (error) throw error;
-  return mapClient(data as Record<string, unknown>);
+  if (await deleteClientIfZeroLtv(result)) return null;
+  return result;
 }
 
 export async function fetchClientDeals(clientId: string) {

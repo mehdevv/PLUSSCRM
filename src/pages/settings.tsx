@@ -62,6 +62,7 @@ export default function Settings() {
   const [currency, setCurrency] = useState<"USD" | "DZD">("USD");
   const [usdToDzdRate, setUsdToDzdRate] = useState("134");
   const [dateFormat, setDateFormat] = useState(DATE_FORMAT_OPTIONS[0]);
+  const [freemoveRepIds, setFreemoveRepIds] = useState<string[]>([]);
   const [notifs, setNotifs] = useState<Record<string, boolean>>({});
   const [passwords, setPasswords] = useState({ current: "", next: "", confirm: "" });
   const [saved, setSaved] = useState(false);
@@ -78,6 +79,7 @@ export default function Settings() {
     setCurrency(settings.currency === "DZD" ? "DZD" : "USD");
     setUsdToDzdRate(String(settings.usd_to_dzd_rate ?? 134));
     setDateFormat(settings.date_format || DATE_FORMAT_OPTIONS[0]);
+    setFreemoveRepIds(settings.freemove_rep_ids ?? []);
     if (isAdmin) {
       setNotifs(settings.notification_prefs ?? {});
     } else {
@@ -100,6 +102,7 @@ export default function Settings() {
         usd_to_dzd_rate: Number(usdToDzdRate) || 134,
         date_format: dateFormat,
         notification_prefs: notifs,
+        freemove_rep_ids: freemoveRepIds,
       },
       {
         onSuccess: () => {
@@ -291,6 +294,40 @@ export default function Settings() {
                     >
                       {DATE_FORMAT_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1.5">Pipeline Freemove</label>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Selected reps see a red Freemove button on pipeline cards to drag deals to any stage or jump via menu.
+                    </p>
+                    <div className="space-y-2 max-h-48 overflow-y-auto border border-border rounded-lg p-3">
+                      {salesReps.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No sales reps found.</p>
+                      ) : (
+                        salesReps.map((rep) => (
+                          <label key={rep.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={freemoveRepIds.includes(rep.id)}
+                              onChange={(e) => {
+                                setFreemoveRepIds((prev) =>
+                                  e.target.checked ? [...prev, rep.id] : prev.filter((id) => id !== rep.id),
+                                );
+                              }}
+                              className="rounded border-border"
+                              data-testid={`freemove-rep-${rep.id}`}
+                            />
+                            <span
+                              className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0"
+                              style={{ backgroundColor: rep.color }}
+                            >
+                              {rep.initials}
+                            </span>
+                            <span>{rep.name}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
                   </div>
                   <button
                     onClick={handleSavePlatform}

@@ -25,4 +25,6 @@ export const queryKeys = {
   accounting: ["accounting"] as const,
   settings: ["settings"] as const,
   notifications: (userId: string) => ["notifications", userId] as const,
+  wireframes: ["wireframes"] as const,
+  wireframe: (id: string) => ["wireframe", id] as const,
 };

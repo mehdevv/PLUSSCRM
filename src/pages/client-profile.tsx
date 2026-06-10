@@ -55,7 +55,6 @@ export default function ClientProfile() {
   const { data: allPayments = [] } = usePayments();
   const { data: leads = [] } = useLeads();
   const { data: allActivities = [] } = useActivities();
-  const leadEmailById = useMemo(() => new Map(leads.map((l) => [l.id, l.email])), [leads]);
   const { addNote, uploadFile, flagRenewal } = useClientMutations();
   const { data: files = [], isLoading: filesLoading } = useQuery({
     queryKey: [...queryKeys.client(clientId), "files"],
@@ -65,9 +64,9 @@ export default function ClientProfile() {
 
   const manager = client ? salesReps.find((r) => r.id === client.manager_id) : undefined;
   const clientDeals = client ? allDeals.filter((d) => d.stage === "WON" && d.rep_id === client.manager_id && d.company?.trim().toLowerCase() === client.company?.trim().toLowerCase()) : [];
-  const clientPayments = client ? paymentsForClient(client, allDeals, allPayments, leadEmailById) : [];
-  const paymentByDealId = useMemo(
-    () => new Map(clientPayments.map((p) => [p.deal_id, p])),
+  const clientPayments = client ? paymentsForClient(client, leads, allPayments) : [];
+  const paymentByLeadId = useMemo(
+    () => new Map(clientPayments.map((p) => [p.lead_id, p])),
     [clientPayments],
   );
   const filesByPayment = files.reduce<Map<string, typeof files>>((map, file) => {
@@ -80,7 +79,7 @@ export default function ClientProfile() {
   const generalFiles = files.filter((f) => !f.payment_id);
   const clientActivities = client ? allActivities.filter((a) => a.company === client.company).slice(0, 20) : [];
   const clientLtv = client
-    ? resolveClientLtv(client, allDeals, allPayments, leadEmailById)
+    ? resolveClientLtv(client, leads, allPayments)
     : { amount: 0, currency: "DZD" };
 
   const handleAddNote = async () => {
@@ -221,7 +220,7 @@ export default function ClientProfile() {
                 </thead>
                 <tbody className="divide-y divide-border">
                   {clientDeals.map((d) => {
-                    const displayAmount = wonDealDisplayAmount(d, paymentByDealId.get(d.id));
+                    const displayAmount = wonDealDisplayAmount(d, paymentByLeadId.get(d.lead_id));
                     return (
                     <tr key={d.id} className="hover:bg-muted/40 transition-colors">
                       <td className="px-4 py-3 font-medium text-foreground">{d.lead_name}</td>

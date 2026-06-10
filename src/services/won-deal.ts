@@ -1,6 +1,13 @@
 import { supabase } from "@/lib/supabase";
 import { mapClient } from "@/lib/mappers";
-import { ensureClientFromWonDeal, findClientByLead, syncClientLtvFromPayments, uploadClientFile } from "@/services/clients";
+import {
+  deleteClientIfZeroLtv,
+  ensureClientFromWonDeal,
+  findClientByLead,
+  pruneZeroLtvClients,
+  syncClientLtvFromPayments,
+  uploadClientFile,
+} from "@/services/clients";
 import { createPayment } from "@/services/payments";
 import { syncDealValue, updateDealStageWithLead } from "@/services/deals";
 import { dealValueFromRow } from "@/lib/deal-value";
@@ -22,7 +29,7 @@ export async function resolveClientForWonDeal(
   lead: Lead,
   dealValue: number,
   currency: string,
-): Promise<Client> {
+): Promise<Client | null> {
   let client = await findClientByLead(lead.company, lead.email);
   if (!client) {
     await new Promise((r) => setTimeout(r, 400));
@@ -51,7 +58,7 @@ export async function completeDealWon(
   lead: Lead,
   payment: WonDealPaymentInput,
   receiptFiles: File[],
-): Promise<Client> {
+): Promise<Client | null> {
   const effectiveValue =
     payment.recordPayment && payment.amount > 0
       ? payment.amount
@@ -64,9 +71,14 @@ export async function completeDealWon(
 
   await updateDealStageWithLead(deal.id, "WON", deal.lead_id);
   let client = await resolveClientForWonDeal(deal, lead, effectiveValue, effectiveCurrency);
+  if (!client) {
+    await pruneZeroLtvClients();
+    return null;
+  }
 
   if (payment.recordPayment) {
     const created = await createPayment({
+      lead_id: deal.lead_id,
       deal_id: deal.id,
       invoice_ref: payment.invoice_ref,
       amount: payment.amount,
@@ -81,7 +93,9 @@ export async function completeDealWon(
       await uploadClientFile(client.id, file, created.id);
     }
 
-    client = await syncClientLtvFromPayments(client);
+    const synced = await syncClientLtvFromPayments(client);
+    if (!synced) return null;
+    client = synced;
   } else if (effectiveValue > 0) {
     const { data, error } = await supabase
       .from("clients")
@@ -96,5 +110,6 @@ export async function completeDealWon(
     if (!error && data) client = mapClient(data as Record<string, unknown>);
   }
 
+  if (client && await deleteClientIfZeroLtv(client)) return null;
   return client;
 }

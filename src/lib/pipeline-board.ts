@@ -1,6 +1,10 @@
+import {
+  ACTIVE_PIPELINE_STAGES,
+  normalizePipelineStage,
+  PIPELINE_KANBAN_STAGES,
+} from "@/lib/constants";
 import type { Deal, LeadStatus } from "@/types";
 
-const ACTIVE_STAGES: LeadStatus[] = ["CONTACTED", "QUALIFYING", "NEGOTIATION", "PROPOSAL"];
 const TERMINAL_STAGES: LeadStatus[] = ["WON", "LOST"];
 
 function dedupeDealsByLead(dealList: Deal[]): Deal[] {
@@ -20,7 +24,7 @@ export function activeBoardDeals(allDeals: Deal[]): Deal[] {
     allDeals.filter((d) => TERMINAL_STAGES.includes(d.stage)).map((d) => d.lead_id),
   );
   const active = allDeals.filter(
-    (d) => ACTIVE_STAGES.includes(d.stage) && !terminalLeadIds.has(d.lead_id),
+    (d) => ACTIVE_PIPELINE_STAGES.includes(d.stage) && !terminalLeadIds.has(d.lead_id),
   );
   return dedupeDealsByLead(active);
 }
@@ -30,8 +34,7 @@ export function terminalBoardDeals(allDeals: Deal[], stage: "WON" | "LOST"): Dea
 }
 
 export function dealsInBoardColumn(boardDeals: Deal[], stage: LeadStatus): Deal[] {
-  if (stage === "NEGOTIATION") {
-    return boardDeals.filter((d) => d.stage === "NEGOTIATION" || d.stage === "PROPOSAL");
-  }
-  return boardDeals.filter((d) => d.stage === stage);
+  return boardDeals.filter((d) => normalizePipelineStage(d.stage) === stage);
 }
+
+export { PIPELINE_KANBAN_STAGES };

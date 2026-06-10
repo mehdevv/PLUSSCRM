@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link } from "wouter";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Spinner } from "@/components/ui/spinner";
-import { useClients, useClientMutations, useSalesReps, useDeals, usePayments, useLeads } from "@/hooks/queries";
+import { useClients, useClientMutations, useSalesReps, usePayments, useLeads } from "@/hooks/queries";
 import { formatClientLtvAmount, resolveClientLtv } from "@/lib/client-ltv";
 import { useAuth } from "@/hooks/useAuth";
 import { useStaffView } from "@/hooks/useSuperMode";
@@ -19,10 +19,8 @@ export default function Clients() {
   const { data: clients = [], isLoading, isError } = useClients();
   const { data: salesReps = [] } = useSalesReps();
   const { create } = useClientMutations();
-  const { data: allDeals = [] } = useDeals();
   const { data: allPayments = [] } = usePayments();
   const { data: leads = [] } = useLeads();
-  const leadEmailById = useMemo(() => new Map(leads.map((l) => [l.id, l.email])), [leads]);
 
   const scoped = effectiveRepId
     ? clients.filter((c) => c.manager_id === effectiveRepId)
@@ -110,7 +108,7 @@ export default function Clients() {
               <tbody className="divide-y divide-border">
                 {filtered.map((client) => {
                   const manager = salesReps.find((r) => r.id === client.manager_id);
-                  const ltv = resolveClientLtv(client, allDeals, allPayments, leadEmailById);
+                  const ltv = resolveClientLtv(client, leads, allPayments);
                   return (
                     <tr key={client.id} className="hover:bg-muted/40 transition-colors" data-testid={`client-row-${client.id}`}>
                       <td className="px-4 py-3">

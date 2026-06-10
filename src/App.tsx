@@ -25,6 +25,8 @@ import Team from "@/pages/team";
 import Leaderboard from "@/pages/leaderboard";
 import Settings from "@/pages/settings";
 import AssistantPage from "@/pages/assistant";
+import WireframesPage from "@/pages/wireframes/index";
+import WireframeDetailPage from "@/pages/wireframes/detail";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -58,6 +60,8 @@ function Router() {
       <Route path="/accounting" component={() => <AuthenticatedRoute component={Accounting} />} />
       <Route path="/team" component={() => <AuthenticatedRoute component={Team} />} />
       <Route path="/assistant" component={() => <AuthenticatedRoute component={AssistantPage} />} />
+      <Route path="/wireframes" component={() => <AuthenticatedRoute component={WireframesPage} />} />
+      <Route path="/wireframes/:id" component={() => <AuthenticatedRoute component={WireframeDetailPage} />} />
       <Route path="/leaderboard" component={() => <AuthenticatedRoute component={Leaderboard} />} />
       <Route path="/settings" component={() => <AuthenticatedRoute component={Settings} />} />
       <Route component={NotFound} />

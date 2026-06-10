@@ -8,7 +8,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell, LabelList,
 } from "recharts";
-import { useDashboard, useDeals, useLeaderboard, usePayments, useSalesReps } from "@/hooks/queries";
+import { useDashboard, useLeaderboard, useLeads, usePayments, useSalesReps } from "@/hooks/queries";
 import { MrrKpiCard } from "@/components/dashboard/MrrKpiCard";
 import { formatRelativeTime } from "@/lib/format";
 import { useCurrency } from "@/hooks/useCurrency";
@@ -115,7 +115,7 @@ export default function Dashboard() {
   } = useDashboard();
   const { data: adminLeaderboard, isLoading: adminLbLoading, isError: adminLbError, refetch: refetchAdminLb } = useLeaderboard("monthly", isAdmin);
   const { data: salesReps = [] } = useSalesReps();
-  const { data: deals = [] } = useDeals(isAdmin ? undefined : user?.id);
+  const { data: leads = [] } = useLeads();
   const { data: payments = [] } = usePayments();
 
   const myRank = leaderboard.data?.find((e) => e.user_id === user?.id);
@@ -196,7 +196,7 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
               <MrrKpiCard
                 payments={payments}
-                deals={deals}
+                leads={leads}
                 isAdmin={isAdmin}
                 repId={user?.id}
               />

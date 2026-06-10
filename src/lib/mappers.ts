@@ -1,3 +1,4 @@
+import { normalizePipelineStage } from "@/lib/constants";
 import type {
   Lead, Deal, Client, Payment, Activity, SplitRule, Profile, Commission, CompensationPlan, RepCompensation, ClientNote, ClientFile, ImportJob, AssignmentQueueItem,
 } from "@/types";
@@ -60,7 +61,7 @@ export function mapDeal(row: Record<string, unknown>, lead?: Record<string, unkn
     lead_name: lead ? `${lead.first_name} ${lead.last_name}` : "",
     company: (lead?.company as string) ?? "",
     value: Number(row.value ?? 0),
-    stage: row.stage as Deal["stage"],
+    stage: normalizePipelineStage(row.stage as Deal["stage"]),
     rep_id: row.rep_id as string,
     currency: (row.currency as string) ?? "USD",
     close_date: closeDate,
@@ -91,7 +92,8 @@ export function mapClient(row: Record<string, unknown>): Client {
 export function mapPayment(row: Record<string, unknown>, company?: string, dealValue?: number): Payment {
   return {
     id: row.id as string,
-    deal_id: row.deal_id as string,
+    lead_id: row.lead_id as string,
+    deal_id: (row.deal_id as string) ?? null,
     invoice_ref: row.invoice_ref as string,
     company: company ?? "",
     deal_value: dealValue ?? 0,
